@@ -89,6 +89,19 @@ func buildBackend(bc config.BackendConfig) (backend.Backend, error) {
 			return nil, fmt.Errorf("local backend: missing required field 'path'")
 		}
 		return backend.NewLocalBackend("local:"+path, path)
+	case "git":
+		url, _ := bc.Options["url"].(string)
+		if url == "" {
+			return nil, fmt.Errorf("git backend: missing required field 'url'")
+		}
+		repoPath, _ := bc.Options["path"].(string)
+		ref, _ := bc.Options["ref"].(string)
+		return backend.NewGitBackend(backend.GitBackendConfig{
+			Name:     "git:" + url,
+			URL:      url,
+			RepoPath: repoPath,
+			Ref:      ref,
+		})
 	default:
 		return nil, fmt.Errorf("unknown backend type %q", bc.Type)
 	}
