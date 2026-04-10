@@ -21,6 +21,12 @@ func NewListCommand() *cobra.Command {
 				return err
 			}
 
+			if len(reg.Backends()) == 0 {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(),
+					"No cluster registry found. Run `kcompass init <url>` to configure a backend,\nor connect to your company VPN/Tailscale network and try again.")
+				return nil
+			}
+
 			records, err := reg.List(cmd.Context())
 			if err != nil {
 				return fmt.Errorf("list: %w", err)

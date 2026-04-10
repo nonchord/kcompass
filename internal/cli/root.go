@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nonchord/kcompass/internal/backend"
+	"github.com/nonchord/kcompass/internal/discovery"
 	"github.com/nonchord/kcompass/pkg/config"
 )
 
@@ -32,7 +33,7 @@ func NewRootCommand() *cobra.Command {
 			if cmd.Context().Value(RegistryKey{}) != nil {
 				return nil
 			}
-			reg, err := buildRegistry(cfgPath)
+			reg, err := buildRegistry(cmd.Context(), cfgPath)
 			if err != nil {
 				return err
 			}
@@ -52,8 +53,9 @@ func NewRootCommand() *cobra.Command {
 }
 
 // buildRegistry loads config and constructs the backend registry.
-// If cfgPath is empty the default path is used.
-func buildRegistry(cfgPath string) (*backend.Registry, error) {
+// When no backends are configured and discovery is not disabled, auto-discovery
+// is attempted with the configured (or default) timeout.
+func buildRegistry(ctx context.Context, cfgPath string) (*backend.Registry, error) {
 	if cfgPath == "" {
 		var err error
 		cfgPath, err = config.DefaultPath()
@@ -84,7 +86,23 @@ func buildRegistry(cfgPath string) (*backend.Registry, error) {
 		backends = append(backends, b)
 	}
 
+	// When no explicit backends are configured, attempt auto-discovery unless
+	// the user has explicitly disabled it.
+	if len(backends) == 0 && discoveryEnabled(cfg) {
+		timeout := cfg.Discovery.Timeout.Duration
+		if timeout == 0 {
+			timeout = 500 * time.Millisecond
+		}
+		backends = discovery.Run(ctx, discovery.DefaultProbes(), timeout)
+	}
+
 	return backend.NewRegistry(backends, ttl), nil
+}
+
+// discoveryEnabled reports whether auto-discovery should run.
+// Discovery is enabled by default (nil Enabled field); set Enabled: false to disable.
+func discoveryEnabled(cfg *config.Config) bool {
+	return cfg.Discovery.Enabled == nil || *cfg.Discovery.Enabled
 }
 
 // buildBackend constructs a single Backend from a BackendConfig.

@@ -70,13 +70,17 @@ backends:
     path: clusters/       # subdirectory to scan, default: repo root
     ref: main             # branch/tag/SHA, default: default branch
 
+  - type: http
+    url: https://clusters.internal.company.com/api/clusters
+    token_env: KCLUSTER_TOKEN   # env var name, optional
+
 cache:
   ttl: 5m                 # how long to cache the merged cluster list in memory
   path: ~/.kcompass/cache/
 
 discovery:
-  enabled: true           # attempt auto-discovery when no backends are configured
-  timeout: 500ms
+  enabled: false          # omit this key (or set true) to enable auto-discovery
+  timeout: 500ms          # per-probe network timeout, default 500ms
 ```
 
 ---
@@ -158,6 +162,74 @@ clusters:
 ```
 
 Files without a top-level `clusters:` key are silently skipped, so a repo can contain other YAML without causing errors.
+
+### HTTP
+
+Fetches cluster records from an HTTP endpoint that returns JSON.
+
+```yaml
+backends:
+  - type: http
+    url: https://clusters.internal.company.com/api/clusters
+    token_env: KCLUSTER_TOKEN   # env var holding a Bearer token, optional
+```
+
+**Expected response format:**
+
+```json
+{
+  "clusters": [
+    {
+      "name": "production",
+      "description": "Production cluster.",
+      "provider": "gke",
+      "auth": "gcloud",
+      "metadata": { "project": "my-project", "region": "us-east1", "cluster_id": "production" }
+    }
+  ]
+}
+```
+
+The token is read from the environment on every request, so rotation is handled transparently.
+
+```sh
+kcompass init https://clusters.internal.company.com/api/clusters
+```
+
+---
+
+## Auto-discovery
+
+When no backends are configured, kcompass automatically probes for a registry using three mechanisms in parallel (500ms timeout):
+
+### 1. Tailscale SRV
+
+If tailscaled is running, kcompass performs an SRV lookup for `_kcompass._tcp.<tailnet-domain>`. To advertise a registry to your tailnet, add an SRV record pointing at your HTTP backend:
+
+```
+_kcompass._tcp.your-tailnet.ts.net. 300 IN SRV 0 0 443 clusters.your-tailnet.ts.net.
+```
+
+### 2. Netbird SRV
+
+If the Netbird WireGuard interface (`wt0`) is present, kcompass performs an SRV lookup for `_kcompass._tcp.<management-domain>`. Same SRV record format as above, on your Netbird management domain.
+
+### 3. DNS TXT
+
+kcompass reads the DNS search domains from `/etc/resolv.conf` and performs a TXT lookup for `kcompass.<domain>` on each one. Publish a TXT record on any domain in your search list:
+
+```
+kcompass.internal.company.com. 300 IN TXT "v=kc1; backend=https://clusters.internal.company.com"
+```
+
+When employees join the company network, `kcompass list` works with zero configuration.
+
+### Disabling discovery
+
+```yaml
+discovery:
+  enabled: false
+```
 
 ---
 
