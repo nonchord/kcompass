@@ -1,0 +1,21 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - revive
+    - gocyclo
+    - godot
+    - misspell
+    - unused
+
+  settings:
+    gocyclo:
+      min-complexity: 15
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
