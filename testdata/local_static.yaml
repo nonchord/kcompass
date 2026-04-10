@@ -1,0 +1,23 @@
+clusters:
+  - name: dev-cluster
+    description: Local dev cluster.
+    provider: generic
+    auth: static
+    metadata:
+      kubeconfig: |
+        apiVersion: v1
+        kind: Config
+        clusters:
+        - cluster:
+            server: https://127.0.0.1:6443
+          name: dev-cluster
+        contexts:
+        - context:
+            cluster: dev-cluster
+            user: dev-admin
+          name: dev-cluster
+        current-context: dev-cluster
+        users:
+        - name: dev-admin
+          user:
+            token: fake-token
