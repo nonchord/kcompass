@@ -15,6 +15,12 @@ type Duration struct {
 	time.Duration
 }
 
+// MarshalYAML implements yaml.Marshaler for Duration, writing the string
+// representation (e.g. "5m0s") so the value roundtrips correctly.
+func (d Duration) MarshalYAML() (interface{}, error) {
+	return d.String(), nil
+}
+
 // UnmarshalYAML implements yaml.Unmarshaler for Duration.
 func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	var s string

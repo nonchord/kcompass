@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,13 +21,18 @@ func NewInitCommand() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := args[0]
-			cfgPath, err := config.DefaultPath()
-			if err != nil {
-				return err
+
+			cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
+			if cfgPath == "" {
+				var err error
+				cfgPath, err = config.DefaultPath()
+				if err != nil {
+					return err
+				}
 			}
 
 			cfg, err := config.Load(cfgPath)
-			if err != nil && !os.IsNotExist(err) {
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
 			if cfg == nil {
