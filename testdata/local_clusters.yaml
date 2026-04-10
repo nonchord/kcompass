@@ -1,0 +1,17 @@
+clusters:
+  - name: cluster1
+    description: The production cluster.
+    provider: gke
+    auth: gcloud
+    metadata:
+      project: my-project
+      region: us-east1
+      cluster_id: cluster1
+  - name: cluster2
+    description: The staging cluster.
+    provider: gke
+    auth: gcloud
+    metadata:
+      project: my-project
+      region: us-east1
+      cluster_id: cluster2

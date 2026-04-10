@@ -2,36 +2,75 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/nonchord/kcompass/internal/backend"
 	"github.com/nonchord/kcompass/internal/cli"
 )
 
-func executeCommand(t *testing.T, args ...string) string {
+const testdataDir = "../../testdata"
+
+// executeWithRegistry runs a kcompass command with a pre-built registry injected,
+// bypassing config-file loading. It returns captured stdout.
+func executeWithRegistry(t *testing.T, reg *backend.Registry, args ...string) (string, error) {
 	t.Helper()
 	buf := &bytes.Buffer{}
 	root := cli.NewRootCommand()
 	root.SetOut(buf)
 	root.SetArgs(args)
-	require.NoError(t, root.Execute())
-	return buf.String()
+
+	// Inject the registry via context before Execute so PersistentPreRunE
+	// can still set it (our override is replaced, so we inject it ourselves
+	// by wrapping the command context).
+	ctx := context.WithValue(context.Background(), cli.RegistryKey{}, reg)
+	root.SetContext(ctx)
+
+	err := root.Execute()
+	return buf.String(), err
 }
 
-func TestListStub(t *testing.T) {
-	assert.Contains(t, executeCommand(t, "list"), "not implemented")
+func makeLocalRegistry(t *testing.T, fixture string) *backend.Registry {
+	t.Helper()
+	b, err := backend.NewLocalBackend("local", filepath.Join(testdataDir, fixture))
+	require.NoError(t, err)
+	return backend.NewRegistry([]backend.Backend{b}, 0)
 }
 
-func TestConnectStub(t *testing.T) {
-	assert.Contains(t, executeCommand(t, "connect", "cluster1"), "not implemented")
+func TestListCommand(t *testing.T) {
+	reg := makeLocalRegistry(t, "local_clusters.yaml")
+	out, err := executeWithRegistry(t, reg, "list")
+	require.NoError(t, err)
+	assert.Contains(t, out, "cluster1")
+	assert.Contains(t, out, "cluster2")
+	assert.Contains(t, out, "The production cluster.")
 }
 
-func TestInitStub(t *testing.T) {
-	assert.Contains(t, executeCommand(t, "init", "https://example.com"), "not implemented")
+func TestListCommandJSON(t *testing.T) {
+	reg := makeLocalRegistry(t, "local_clusters.yaml")
+	out, err := executeWithRegistry(t, reg, "list", "--json")
+	require.NoError(t, err)
+	var records []backend.ClusterRecord
+	require.NoError(t, json.Unmarshal([]byte(out), &records))
+	assert.Len(t, records, 2)
 }
 
-func TestBackendsStub(t *testing.T) {
-	assert.Contains(t, executeCommand(t, "backends"), "not implemented")
+func TestConnectStaticAuth(t *testing.T) {
+	reg := makeLocalRegistry(t, "local_static.yaml")
+	kubeconfigPath := filepath.Join(t.TempDir(), "kubeconfig")
+	t.Setenv("KUBECONFIG", kubeconfigPath)
+
+	out, err := executeWithRegistry(t, reg, "connect", "dev-cluster")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Done.")
+	assert.Contains(t, out, "dev-cluster")
+
+	_, statErr := os.Stat(kubeconfigPath)
+	assert.NoError(t, statErr, "kubeconfig should have been created")
 }
