@@ -25,23 +25,14 @@ func loadConfig(t *testing.T, path string) *config.Config {
 	return cfg
 }
 
-func TestInitHTTP(t *testing.T) {
-	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
-	runInit(t, cfgPath, "https://clusters.example.com/api/clusters")
-	cfg := loadConfig(t, cfgPath)
-	require.Len(t, cfg.Backends, 1)
-	assert.Equal(t, "http", cfg.Backends[0].Type)
-	assert.Equal(t, "https://clusters.example.com/api/clusters", cfg.Backends[0].Options["url"])
-}
-
-func TestInitGitHTTPS(t *testing.T) {
+func TestInitHTTPS(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	runInit(t, cfgPath, "https://github.com/org/clusters")
-
-	// https:// should be treated as HTTP backend, not git
 	cfg := loadConfig(t, cfgPath)
 	require.Len(t, cfg.Backends, 1)
-	assert.Equal(t, "http", cfg.Backends[0].Type)
+	// https:// is a git backend — there is no HTTP backend type
+	assert.Equal(t, "git", cfg.Backends[0].Type)
+	assert.Equal(t, "https://github.com/org/clusters", cfg.Backends[0].Options["url"])
 }
 
 func TestInitGitSSH(t *testing.T) {

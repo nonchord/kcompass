@@ -48,6 +48,7 @@ func NewRootCommand() *cobra.Command {
 		NewConnectCommand(),
 		NewInitCommand(),
 		NewBackendsCommand(),
+		NewOperatorCommand(),
 	)
 	return root
 }
@@ -127,17 +128,6 @@ func buildBackend(bc config.BackendConfig) (backend.Backend, error) {
 			RepoPath: repoPath,
 			Ref:      ref,
 		})
-	case "http":
-		url, _ := bc.Options["url"].(string)
-		if url == "" {
-			return nil, fmt.Errorf("http backend: missing required field 'url'")
-		}
-		tokenEnv, _ := bc.Options["token_env"].(string)
-		return backend.NewHTTPBackend(backend.HTTPBackendConfig{
-			Name:     "http:" + url,
-			URL:      url,
-			TokenEnv: tokenEnv,
-		}), nil
 	default:
 		return nil, fmt.Errorf("unknown backend type %q", bc.Type)
 	}

@@ -70,10 +70,6 @@ backends:
     path: clusters/       # subdirectory to scan, default: repo root
     ref: main             # branch/tag/SHA, default: default branch
 
-  - type: http
-    url: https://clusters.internal.company.com/api/clusters
-    token_env: KCLUSTER_TOKEN   # env var name, optional
-
 cache:
   ttl: 5m                 # how long to cache the merged cluster list in memory
   path: ~/.kcompass/cache/
@@ -163,66 +159,51 @@ clusters:
 
 Files without a top-level `clusters:` key are silently skipped, so a repo can contain other YAML without causing errors.
 
-### HTTP
-
-Fetches cluster records from an HTTP endpoint that returns JSON.
-
-```yaml
-backends:
-  - type: http
-    url: https://clusters.internal.company.com/api/clusters
-    token_env: KCLUSTER_TOKEN   # env var holding a Bearer token, optional
-```
-
-**Expected response format:**
-
-```json
-{
-  "clusters": [
-    {
-      "name": "production",
-      "description": "Production cluster.",
-      "provider": "gke",
-      "auth": "gcloud",
-      "metadata": { "project": "my-project", "region": "us-east1", "cluster_id": "production" }
-    }
-  ]
-}
-```
-
-The token is read from the environment on every request, so rotation is handled transparently.
-
-```sh
-kcompass init https://clusters.internal.company.com/api/clusters
-```
-
 ---
 
 ## Auto-discovery
 
 When no backends are configured, kcompass automatically probes for a registry using three mechanisms in parallel (500ms timeout):
 
-### 1. Tailscale SRV
-
-If tailscaled is running, kcompass performs an SRV lookup for `_kcompass._tcp.<tailnet-domain>`. To advertise a registry to your tailnet, add an SRV record pointing at your HTTP backend:
+All three mechanisms use the same DNS TXT record format. The record value is always:
 
 ```
-_kcompass._tcp.your-tailnet.ts.net. 300 IN SRV 0 0 443 clusters.your-tailnet.ts.net.
+"v=kc1; backend=<git-url>"
 ```
 
-### 2. Netbird SRV
+The hostname where you publish it depends on your network.
 
-If the Netbird WireGuard interface (`wt0`) is present, kcompass performs an SRV lookup for `_kcompass._tcp.<management-domain>`. Same SRV record format as above, on your Netbird management domain.
+### 1. Corporate DNS
 
-### 3. DNS TXT
-
-kcompass reads the DNS search domains from `/etc/resolv.conf` and performs a TXT lookup for `kcompass.<domain>` on each one. Publish a TXT record on any domain in your search list:
+kcompass reads the DNS search domains from `/etc/resolv.conf` and performs a TXT lookup for `kcompass.<domain>` on each one:
 
 ```
-kcompass.internal.company.com. 300 IN TXT "v=kc1; backend=https://clusters.internal.company.com"
+kcompass.internal.company.com. 300 IN TXT "v=kc1; backend=git@github.com:company/clusters"
 ```
 
-When employees join the company network, `kcompass list` works with zero configuration.
+### 2. Tailscale
+
+If tailscaled is running, kcompass looks up `kcompass.<tailnet-magic-dns-suffix>` as a TXT record:
+
+```
+kcompass.your-tailnet.ts.net. 300 IN TXT "v=kc1; backend=git@github.com:company/clusters"
+```
+
+### 3. Netbird
+
+If the Netbird WireGuard interface (`wt0`) is present, kcompass looks up `kcompass.<management-server-domain>` as a TXT record:
+
+```
+kcompass.app.netbird.io. 300 IN TXT "v=kc1; backend=git@github.com:company/clusters"
+```
+
+### Generating the record
+
+`kcompass operator dns` prints the exact record to add for any backend URL:
+
+```sh
+$ kcompass operator dns git@github.com:company/clusters
+```
 
 ### Disabling discovery
 
@@ -244,6 +225,7 @@ discovery:
 | `kcompass connect <name> --no-switch` | Merge credentials without switching context |
 | `kcompass init <url-or-path>` | Register a backend |
 | `kcompass backends` | List configured backends and their status |
+| `kcompass operator dns <url>` | Print DNS TXT records for auto-discovery |
 
 ---
 

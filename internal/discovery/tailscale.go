@@ -19,8 +19,8 @@ type TailscaleOptions struct {
 	// RunStatus runs "tailscale status --json". If nil, exec.CommandContext is used.
 	// In production this is only attempted when SocketPath exists.
 	RunStatus func(ctx context.Context) ([]byte, error)
-	// LookupSRV performs the _kcompass._tcp SRV lookup. If nil, net.DefaultResolver is used.
-	LookupSRV func(ctx context.Context, service, proto, name string) (string, []*net.SRV, error)
+	// LookupTXT performs the kcompass.<tailnet> TXT lookup. If nil, net.DefaultResolver is used.
+	LookupTXT func(ctx context.Context, name string) ([]string, error)
 }
 
 // tailscaleStatusJSON is the subset of `tailscale status --json` we need.
@@ -28,8 +28,8 @@ type tailscaleStatusJSON struct {
 	MagicDNSSuffix string `json:"MagicDNSSuffix"`
 }
 
-// TailscaleProbe returns a ProbeFunc that detects Tailscale and performs an
-// SRV lookup for _kcompass._tcp.<tailnet-domain>.
+// TailscaleProbe returns a ProbeFunc that detects Tailscale, determines the
+// tailnet's MagicDNS suffix, and looks up a "kcompass.<suffix>" TXT record.
 func TailscaleProbe(opts TailscaleOptions) ProbeFunc {
 	if opts.SocketPath == "" {
 		opts.SocketPath = "/var/run/tailscale/tailscaled.sock"
@@ -38,15 +38,14 @@ func TailscaleProbe(opts TailscaleOptions) ProbeFunc {
 
 	if opts.RunStatus == nil {
 		opts.RunStatus = func(ctx context.Context) ([]byte, error) {
-			// Only attempt the subprocess when the socket indicates tailscaled is running.
 			if _, err := os.Stat(socketPath); err != nil {
 				return nil, err
 			}
 			return exec.CommandContext(ctx, "tailscale", "status", "--json").Output()
 		}
 	}
-	if opts.LookupSRV == nil {
-		opts.LookupSRV = net.DefaultResolver.LookupSRV
+	if opts.LookupTXT == nil {
+		opts.LookupTXT = net.DefaultResolver.LookupTXT
 	}
 
 	return func(ctx context.Context) (backend.Backend, error) {
@@ -58,6 +57,6 @@ func TailscaleProbe(opts TailscaleOptions) ProbeFunc {
 		if err := json.Unmarshal(data, &st); err != nil || st.MagicDNSSuffix == "" {
 			return nil, nil
 		}
-		return srvToHTTPBackend(ctx, st.MagicDNSSuffix, opts.LookupSRV)
+		return txtBackend(ctx, st.MagicDNSSuffix, opts.LookupTXT)
 	}
 }

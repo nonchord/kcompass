@@ -39,19 +39,9 @@ func DNSProbe(opts DNSOptions) ProbeFunc {
 		if domains == nil {
 			domains = searchDomainsFromFile(opts.ResolvConf)
 		}
-
 		for _, domain := range domains {
-			txts, err := opts.LookupTXT(ctx, "kcompass."+domain)
-			if err != nil {
-				continue
-			}
-			for _, txt := range txts {
-				if url, ok := parseTXTRecord(txt); ok {
-					return backend.NewHTTPBackend(backend.HTTPBackendConfig{
-						Name: "discovery:dns:" + domain,
-						URL:  url,
-					}), nil
-				}
+			if b, _ := txtBackend(ctx, domain, opts.LookupTXT); b != nil {
+				return b, nil
 			}
 		}
 		return nil, nil

@@ -5,9 +5,6 @@ package discovery
 
 import (
 	"context"
-	"fmt"
-	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -61,23 +58,26 @@ func DefaultProbes() []ProbeFunc {
 	}
 }
 
-// srvToHTTPBackend performs an SRV lookup for _kcompass._tcp.<domain> and
-// returns an HTTP backend pointed at the highest-priority result.
-// Returns (nil, nil) when the lookup finds nothing.
-func srvToHTTPBackend(
+// txtBackend looks up "kcompass.<domain>" as a DNS TXT record and returns a
+// backend for the first valid "v=kc1; backend=<url>" value found.
+// Returns (nil, nil) when no matching record exists.
+func txtBackend(
 	ctx context.Context,
 	domain string,
-	lookupSRV func(ctx context.Context, service, proto, name string) (string, []*net.SRV, error),
+	lookupTXT func(context.Context, string) ([]string, error),
 ) (backend.Backend, error) {
-	_, addrs, err := lookupSRV(ctx, "kcompass", "tcp", domain)
-	if err != nil || len(addrs) == 0 {
+	txts, err := lookupTXT(ctx, "kcompass."+domain)
+	if err != nil {
 		return nil, nil
 	}
-	srv := addrs[0]
-	target := strings.TrimSuffix(srv.Target, ".")
-	url := fmt.Sprintf("https://%s:%d", target, srv.Port)
-	return backend.NewHTTPBackend(backend.HTTPBackendConfig{
-		Name: "discovery:srv:" + domain,
-		URL:  url,
-	}), nil
+	for _, txt := range txts {
+		if url, ok := parseTXTRecord(txt); ok {
+			b, err := backend.NewBackendFromURL(url)
+			if err != nil {
+				continue
+			}
+			return b, nil
+		}
+	}
+	return nil, nil
 }
