@@ -54,7 +54,8 @@ discovery:
 	assert.Equal(t, "local", cfg.Backends[1].Type)
 	assert.Equal(t, 5*time.Minute, cfg.Cache.TTL.Duration)
 	assert.Equal(t, 500*time.Millisecond, cfg.Discovery.Timeout.Duration)
-	assert.True(t, cfg.Discovery.Enabled)
+	require.NotNil(t, cfg.Discovery.Enabled)
+	assert.True(t, *cfg.Discovery.Enabled)
 }
 
 func TestLoadMissingFile(t *testing.T) {

@@ -51,8 +51,10 @@ type CacheConfig struct {
 
 // DiscoveryConfig holds auto-discovery settings.
 type DiscoveryConfig struct {
-	Enabled bool     `yaml:"enabled"`
-	Timeout Duration `yaml:"timeout"`
+	// Enabled controls auto-discovery when no backends are configured.
+	// Nil (absent from config) means enabled; false explicitly disables it.
+	Enabled *bool    `yaml:"enabled,omitempty"`
+	Timeout Duration `yaml:"timeout,omitempty"`
 }
 
 // Config is the top-level kcompass configuration.
