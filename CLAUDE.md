@@ -10,7 +10,7 @@ Read `SPEC.md` for the full specification. This file contains working instructio
 ## Language and Tooling
 
 - **Language:** Go (latest stable)
-- **Module path:** `github.com/mdwn/kcompass`
+- **Module path:** `github.com/nonchord/kcompass`
 - **CLI framework:** `cobra`
 - **YAML:** `gopkg.in/yaml.v3`
 - **Git backend:** `go-git/go-git`
