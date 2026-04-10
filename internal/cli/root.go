@@ -21,6 +21,8 @@ type RegistryKey struct{}
 
 // NewRootCommand builds the root kcompass command with all subcommands registered.
 func NewRootCommand() *cobra.Command {
+	var cfgPath string
+
 	root := &cobra.Command{
 		Use:          "kcompass",
 		Short:        "Discover and connect to Kubernetes clusters",
@@ -30,7 +32,7 @@ func NewRootCommand() *cobra.Command {
 			if cmd.Context().Value(RegistryKey{}) != nil {
 				return nil
 			}
-			reg, err := buildRegistry()
+			reg, err := buildRegistry(cfgPath)
 			if err != nil {
 				return err
 			}
@@ -39,6 +41,7 @@ func NewRootCommand() *cobra.Command {
 			return nil
 		},
 	}
+	root.PersistentFlags().StringVar(&cfgPath, "config", "", "path to config file (default: ~/.kcompass/config.yaml)")
 	root.AddCommand(
 		NewListCommand(),
 		NewConnectCommand(),
@@ -49,10 +52,14 @@ func NewRootCommand() *cobra.Command {
 }
 
 // buildRegistry loads config and constructs the backend registry.
-func buildRegistry() (*backend.Registry, error) {
-	cfgPath, err := config.DefaultPath()
-	if err != nil {
-		return nil, err
+// If cfgPath is empty the default path is used.
+func buildRegistry(cfgPath string) (*backend.Registry, error) {
+	if cfgPath == "" {
+		var err error
+		cfgPath, err = config.DefaultPath()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	cfg, err := config.Load(cfgPath)
@@ -102,6 +109,17 @@ func buildBackend(bc config.BackendConfig) (backend.Backend, error) {
 			RepoPath: repoPath,
 			Ref:      ref,
 		})
+	case "http":
+		url, _ := bc.Options["url"].(string)
+		if url == "" {
+			return nil, fmt.Errorf("http backend: missing required field 'url'")
+		}
+		tokenEnv, _ := bc.Options["token_env"].(string)
+		return backend.NewHTTPBackend(backend.HTTPBackendConfig{
+			Name:     "http:" + url,
+			URL:      url,
+			TokenEnv: tokenEnv,
+		}), nil
 	default:
 		return nil, fmt.Errorf("unknown backend type %q", bc.Type)
 	}

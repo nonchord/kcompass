@@ -17,6 +17,18 @@ import (
 
 const testdataDir = "../../testdata"
 
+// executeWithConfig runs a command with a custom config file path, bypassing
+// the default ~/.kcompass/config.yaml. The registry is built from that config.
+func executeWithConfig(t *testing.T, cfgPath string, args ...string) (string, error) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	root := cli.NewRootCommand()
+	root.SetOut(buf)
+	root.SetArgs(append([]string{"--config", cfgPath}, args...))
+	err := root.Execute()
+	return buf.String(), err
+}
+
 // executeWithRegistry runs a kcompass command with a pre-built registry injected,
 // bypassing config-file loading. It returns captured stdout.
 func executeWithRegistry(t *testing.T, reg *backend.Registry, args ...string) (string, error) {
