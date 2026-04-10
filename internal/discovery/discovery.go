@@ -5,6 +5,7 @@ package discovery
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -48,11 +49,16 @@ func Run(ctx context.Context, probes []ProbeFunc, timeout time.Duration) []backe
 }
 
 // DefaultProbes returns the standard discovery probe set for production use.
-func DefaultProbes() []ProbeFunc {
+// Pass an optional log function to receive per-probe diagnostic messages.
+func DefaultProbes(log ...func(string)) []ProbeFunc {
+	var logFn func(string)
+	if len(log) > 0 {
+		logFn = log[0]
+	}
 	return []ProbeFunc{
-		TailscaleProbe(TailscaleOptions{}),
-		NetbirdProbe(NetbirdOptions{}),
-		DNSProbe(DNSOptions{}),
+		TailscaleProbe(TailscaleOptions{Log: logFn}),
+		NetbirdProbe(NetbirdOptions{Log: logFn}),
+		DNSProbe(DNSOptions{Log: logFn}),
 		GCloudProbe(),
 		AWSProbe(),
 	}
@@ -60,24 +66,39 @@ func DefaultProbes() []ProbeFunc {
 
 // txtBackend looks up "kcompass.<domain>" as a DNS TXT record and returns a
 // backend for the first valid "v=kc1; backend=<url>" value found.
+// sourceName is used as the backend name prefix (e.g. "tailscale", "dns:corp.example.com")
+// and as the subject of any log messages.
 // Returns (nil, nil) when no matching record exists.
 func txtBackend(
 	ctx context.Context,
+	sourceName string,
 	domain string,
 	lookupTXT func(context.Context, string) ([]string, error),
+	log func(string),
 ) (backend.Backend, error) {
-	txts, err := lookupTXT(ctx, "kcompass."+domain)
+	hostname := "kcompass." + domain
+	txts, err := lookupTXT(ctx, hostname)
 	if err != nil {
+		if log != nil {
+			log(fmt.Sprintf("discovery: %s: TXT lookup for %s failed: %v", sourceName, hostname, err))
+		}
 		return nil, nil
 	}
 	for _, txt := range txts {
-		if url, ok := parseTXTRecord(txt); ok {
-			b, err := backend.NewBackendFromURL(url)
-			if err != nil {
+		if url, ok := ParseTXTRecord(txt); ok {
+			name := sourceName + ":" + url
+			b, buildErr := backend.NewNamedBackendFromURL(name, url)
+			if buildErr != nil {
 				continue
+			}
+			if log != nil {
+				log(fmt.Sprintf("discovery: %s: found backend %q via %s", sourceName, url, hostname))
 			}
 			return b, nil
 		}
+	}
+	if log != nil {
+		log(fmt.Sprintf("discovery: %s: no kcompass TXT record at %s", sourceName, hostname))
 	}
 	return nil, nil
 }

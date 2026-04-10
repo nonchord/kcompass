@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -21,6 +22,8 @@ type TailscaleOptions struct {
 	RunStatus func(ctx context.Context) ([]byte, error)
 	// LookupTXT performs the kcompass.<tailnet> TXT lookup. If nil, net.DefaultResolver is used.
 	LookupTXT func(ctx context.Context, name string) ([]string, error)
+	// Log, when non-nil, receives diagnostic messages during probing.
+	Log func(string)
 }
 
 // tailscaleStatusJSON is the subset of `tailscale status --json` we need.
@@ -51,12 +54,21 @@ func TailscaleProbe(opts TailscaleOptions) ProbeFunc {
 	return func(ctx context.Context) (backend.Backend, error) {
 		data, err := opts.RunStatus(ctx)
 		if err != nil {
+			if opts.Log != nil {
+				opts.Log(fmt.Sprintf("discovery: tailscale: not detected (%v)", err))
+			}
 			return nil, nil
 		}
 		var st tailscaleStatusJSON
 		if err := json.Unmarshal(data, &st); err != nil || st.MagicDNSSuffix == "" {
+			if opts.Log != nil {
+				opts.Log("discovery: tailscale: no MagicDNS suffix in status output")
+			}
 			return nil, nil
 		}
-		return txtBackend(ctx, st.MagicDNSSuffix, opts.LookupTXT)
+		if opts.Log != nil {
+			opts.Log(fmt.Sprintf("discovery: tailscale: MagicDNS suffix = %s", st.MagicDNSSuffix))
+		}
+		return txtBackend(ctx, "tailscale", st.MagicDNSSuffix, opts.LookupTXT, opts.Log)
 	}
 }

@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os/exec"
 
@@ -20,6 +21,8 @@ type NetbirdOptions struct {
 	RunStatus func(ctx context.Context) ([]byte, error)
 	// LookupTXT performs the kcompass.<mgmt-domain> TXT lookup. If nil, net.DefaultResolver is used.
 	LookupTXT func(ctx context.Context, name string) ([]string, error)
+	// Log, when non-nil, receives diagnostic messages during probing.
+	Log func(string)
 }
 
 // netbirdStatusJSON is the subset of `netbird status --json` we need.
@@ -55,17 +58,29 @@ func NetbirdProbe(opts NetbirdOptions) ProbeFunc {
 	return func(ctx context.Context) (backend.Backend, error) {
 		data, err := opts.RunStatus(ctx)
 		if err != nil {
+			if opts.Log != nil {
+				opts.Log(fmt.Sprintf("discovery: netbird: not detected (%v)", err))
+			}
 			return nil, nil
 		}
 		var st netbirdStatusJSON
 		if err := json.Unmarshal(data, &st); err != nil || st.ManagementState.URL == "" {
+			if opts.Log != nil {
+				opts.Log("discovery: netbird: no management URL in status output")
+			}
 			return nil, nil
 		}
 		domain := mgmtURLToDomain(st.ManagementState.URL)
 		if domain == "" {
+			if opts.Log != nil {
+				opts.Log("discovery: netbird: could not parse management domain")
+			}
 			return nil, nil
 		}
-		return txtBackend(ctx, domain, opts.LookupTXT)
+		if opts.Log != nil {
+			opts.Log(fmt.Sprintf("discovery: netbird: management domain = %s", domain))
+		}
+		return txtBackend(ctx, "netbird", domain, opts.LookupTXT, opts.Log)
 	}
 }
 
