@@ -21,6 +21,8 @@ type DNSOptions struct {
 	SearchDomains []string
 	// LookupTXT performs a TXT lookup. If nil, net.DefaultResolver is used.
 	LookupTXT func(ctx context.Context, name string) ([]string, error)
+	// Log, when non-nil, receives diagnostic messages during probing.
+	Log func(string)
 }
 
 // DNSProbe returns a ProbeFunc that reads DNS search domains and looks up
@@ -39,8 +41,14 @@ func DNSProbe(opts DNSOptions) ProbeFunc {
 		if domains == nil {
 			domains = searchDomainsFromFile(opts.ResolvConf)
 		}
+		if len(domains) == 0 {
+			if opts.Log != nil {
+				opts.Log("discovery: dns: no search domains found")
+			}
+			return nil, nil
+		}
 		for _, domain := range domains {
-			if b, _ := txtBackend(ctx, domain, opts.LookupTXT); b != nil {
+			if b, _ := txtBackend(ctx, "dns:"+domain, domain, opts.LookupTXT, opts.Log); b != nil {
 				return b, nil
 			}
 		}
@@ -79,9 +87,9 @@ func parseResolvConf(r io.Reader) []string {
 	return domains
 }
 
-// parseTXTRecord parses a DNS TXT record of the form "v=kc1; backend=<url>".
+// ParseTXTRecord parses a DNS TXT record of the form "v=kc1; backend=<url>".
 // Returns the URL and true on success.
-func parseTXTRecord(txt string) (string, bool) {
+func ParseTXTRecord(txt string) (string, bool) {
 	if !strings.HasPrefix(strings.TrimSpace(txt), "v=kc1") {
 		return "", false
 	}

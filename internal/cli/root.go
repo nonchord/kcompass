@@ -23,6 +23,7 @@ type RegistryKey struct{}
 // NewRootCommand builds the root kcompass command with all subcommands registered.
 func NewRootCommand() *cobra.Command {
 	var cfgPath string
+	var verbose bool
 
 	root := &cobra.Command{
 		Use:          "kcompass",
@@ -33,7 +34,11 @@ func NewRootCommand() *cobra.Command {
 			if cmd.Context().Value(RegistryKey{}) != nil {
 				return nil
 			}
-			reg, err := buildRegistry(cmd.Context(), cfgPath)
+			var logFn func(string)
+			if verbose {
+				logFn = func(s string) { _, _ = fmt.Fprintln(cmd.ErrOrStderr(), s) }
+			}
+			reg, err := buildRegistry(cmd.Context(), cfgPath, logFn)
 			if err != nil {
 				return err
 			}
@@ -43,6 +48,7 @@ func NewRootCommand() *cobra.Command {
 		},
 	}
 	root.PersistentFlags().StringVar(&cfgPath, "config", "", "path to config file (default: ~/.kcompass/config.yaml)")
+	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "show discovery diagnostics on stderr")
 	root.AddCommand(
 		NewListCommand(),
 		NewConnectCommand(),
@@ -56,7 +62,8 @@ func NewRootCommand() *cobra.Command {
 // buildRegistry loads config and constructs the backend registry.
 // When no backends are configured and discovery is not disabled, auto-discovery
 // is attempted with the configured (or default) timeout.
-func buildRegistry(ctx context.Context, cfgPath string) (*backend.Registry, error) {
+// log, when non-nil, receives per-probe diagnostic messages.
+func buildRegistry(ctx context.Context, cfgPath string, log func(string)) (*backend.Registry, error) {
 	if cfgPath == "" {
 		var err error
 		cfgPath, err = config.DefaultPath()
@@ -94,7 +101,17 @@ func buildRegistry(ctx context.Context, cfgPath string) (*backend.Registry, erro
 		if timeout == 0 {
 			timeout = 500 * time.Millisecond
 		}
-		backends = discovery.Run(ctx, discovery.DefaultProbes(), timeout)
+		if log != nil {
+			log("Auto-discovery: running probes...")
+		}
+		backends = discovery.Run(ctx, discovery.DefaultProbes(log), timeout)
+		if log != nil {
+			if len(backends) > 0 {
+				log(fmt.Sprintf("Auto-discovery: found %d backend(s)", len(backends)))
+			} else {
+				log("Auto-discovery: no backends found")
+			}
+		}
 	}
 
 	return backend.NewRegistry(backends, ttl), nil
