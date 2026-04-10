@@ -3,7 +3,6 @@ package discovery_test
 import (
 	"context"
 	"errors"
-	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,24 +12,6 @@ import (
 
 	"github.com/nonchord/kcompass/internal/discovery"
 )
-
-func mockSRV(target string, port uint16) func(ctx context.Context, service, proto, name string) (string, []*net.SRV, error) {
-	return func(_ context.Context, _, _, _ string) (string, []*net.SRV, error) {
-		return "", []*net.SRV{{Target: target, Port: port, Priority: 0, Weight: 0}}, nil
-	}
-}
-
-func mockSRVErr(err error) func(ctx context.Context, service, proto, name string) (string, []*net.SRV, error) {
-	return func(_ context.Context, _, _, _ string) (string, []*net.SRV, error) {
-		return "", nil, err
-	}
-}
-
-func mockSRVEmpty() func(ctx context.Context, service, proto, name string) (string, []*net.SRV, error) {
-	return func(_ context.Context, _, _, _ string) (string, []*net.SRV, error) {
-		return "", nil, nil
-	}
-}
 
 func tailscaleStatus(suffix string) func(ctx context.Context) ([]byte, error) {
 	return func(_ context.Context) ([]byte, error) {
@@ -45,28 +26,30 @@ func tailscaleStatusErr(err error) func(ctx context.Context) ([]byte, error) {
 func TestTailscaleProbeFound(t *testing.T) {
 	probe := discovery.TailscaleProbe(discovery.TailscaleOptions{
 		RunStatus: tailscaleStatus("tailnet.ts.net"),
-		LookupSRV: mockSRV("kcompass.tailnet.ts.net.", 8443),
+		LookupTXT: mockTXT(map[string][]string{
+			"kcompass.tailnet.ts.net": {"v=kc1; backend=git@github.com:company/clusters"},
+		}),
 	})
 	b, err := probe(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, b)
-	assert.Contains(t, b.Name(), "tailnet.ts.net")
+	assert.Contains(t, b.Name(), "github.com")
 }
 
 func TestTailscaleProbeStatusFails(t *testing.T) {
 	probe := discovery.TailscaleProbe(discovery.TailscaleOptions{
 		RunStatus: tailscaleStatusErr(errors.New("not installed")),
-		LookupSRV: mockSRV("irrelevant.", 8443),
+		LookupTXT: mockTXT(map[string][]string{}),
 	})
 	b, err := probe(context.Background())
 	assert.NoError(t, err)
 	assert.Nil(t, b)
 }
 
-func TestTailscaleProbeNoSRVRecord(t *testing.T) {
+func TestTailscaleProbeNoTXTRecord(t *testing.T) {
 	probe := discovery.TailscaleProbe(discovery.TailscaleOptions{
 		RunStatus: tailscaleStatus("tailnet.ts.net"),
-		LookupSRV: mockSRVEmpty(),
+		LookupTXT: mockTXT(map[string][]string{}),
 	})
 	b, err := probe(context.Background())
 	assert.NoError(t, err)
@@ -76,7 +59,7 @@ func TestTailscaleProbeNoSRVRecord(t *testing.T) {
 func TestTailscaleProbeInvalidJSON(t *testing.T) {
 	probe := discovery.TailscaleProbe(discovery.TailscaleOptions{
 		RunStatus: func(_ context.Context) ([]byte, error) { return []byte("not json"), nil },
-		LookupSRV: mockSRV("irrelevant.", 8443),
+		LookupTXT: mockTXT(map[string][]string{}),
 	})
 	b, err := probe(context.Background())
 	assert.NoError(t, err)
@@ -88,7 +71,7 @@ func TestTailscaleProbeEmptyDNSSuffix(t *testing.T) {
 		RunStatus: func(_ context.Context) ([]byte, error) {
 			return []byte(`{"MagicDNSSuffix":""}`), nil
 		},
-		LookupSRV: mockSRV("irrelevant.", 8443),
+		LookupTXT: mockTXT(map[string][]string{}),
 	})
 	b, err := probe(context.Background())
 	assert.NoError(t, err)
@@ -103,36 +86,9 @@ func TestTailscaleProbeContextCancelled(t *testing.T) {
 		RunStatus: func(ctx context.Context) ([]byte, error) {
 			return nil, ctx.Err()
 		},
-		LookupSRV: mockSRV("irrelevant.", 8443),
+		LookupTXT: mockTXT(map[string][]string{}),
 	})
 	b, err := probe(ctx)
-	assert.NoError(t, err) // errors are swallowed
-	assert.Nil(t, b)
-}
-
-func TestTailscaleProbeSocketPath(t *testing.T) {
-	// Verify SocketPath is used by the default RunStatus: when socket is absent,
-	// production would skip the subprocess. Here we inject RunStatus directly
-	// so just check the production path accepts an explicit SocketPath.
-	socketFile := filepath.Join(t.TempDir(), "tailscaled.sock")
-	require.NoError(t, os.WriteFile(socketFile, nil, 0o600))
-
-	probe := discovery.TailscaleProbe(discovery.TailscaleOptions{
-		SocketPath: socketFile,
-		RunStatus:  tailscaleStatus("example.ts.net"),
-		LookupSRV:  mockSRV("kcompass.example.ts.net.", 443),
-	})
-	b, err := probe(context.Background())
-	require.NoError(t, err)
-	require.NotNil(t, b)
-}
-
-func TestTailscaleProbeSRVError(t *testing.T) {
-	probe := discovery.TailscaleProbe(discovery.TailscaleOptions{
-		RunStatus: tailscaleStatus("tailnet.ts.net"),
-		LookupSRV: mockSRVErr(errors.New("NXDOMAIN")),
-	})
-	b, err := probe(context.Background())
 	assert.NoError(t, err)
 	assert.Nil(t, b)
 }
@@ -142,22 +98,49 @@ func TestTailscaleProbeSRVError(t *testing.T) {
 func TestTailscaleProbeDefaultSocketAbsent(t *testing.T) {
 	probe := discovery.TailscaleProbe(discovery.TailscaleOptions{
 		SocketPath: filepath.Join(t.TempDir(), "nonexistent.sock"),
-		// RunStatus is intentionally nil to use the default implementation.
-		LookupSRV: mockSRV("irrelevant.", 8443),
+		LookupTXT:  mockTXT(map[string][]string{}),
 	})
 	b, err := probe(context.Background())
 	assert.NoError(t, err)
 	assert.Nil(t, b)
 }
 
-func TestTailscaleProbeURLFormat(t *testing.T) {
+func TestTailscaleProbeSocketPath(t *testing.T) {
+	socketFile := filepath.Join(t.TempDir(), "tailscaled.sock")
+	require.NoError(t, os.WriteFile(socketFile, nil, 0o600))
+
 	probe := discovery.TailscaleProbe(discovery.TailscaleOptions{
-		RunStatus: tailscaleStatus("mynet.ts.net"),
-		LookupSRV: mockSRV("server.mynet.ts.net.", 8080),
+		SocketPath: socketFile,
+		RunStatus:  tailscaleStatus("example.ts.net"),
+		LookupTXT: mockTXT(map[string][]string{
+			"kcompass.example.ts.net": {"v=kc1; backend=git@github.com:org/clusters"},
+		}),
 	})
 	b, err := probe(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, b)
-	// Backend is an HTTPBackend; its name encodes the domain.
-	assert.Contains(t, b.Name(), "mynet.ts.net")
+}
+
+func TestTailscaleProbeTXTError(t *testing.T) {
+	probe := discovery.TailscaleProbe(discovery.TailscaleOptions{
+		RunStatus: tailscaleStatus("tailnet.ts.net"),
+		LookupTXT: func(_ context.Context, _ string) ([]string, error) {
+			return nil, errors.New("NXDOMAIN")
+		},
+	})
+	b, err := probe(context.Background())
+	assert.NoError(t, err)
+	assert.Nil(t, b)
+}
+
+func TestTailscaleProbeWrongTXTFormat(t *testing.T) {
+	probe := discovery.TailscaleProbe(discovery.TailscaleOptions{
+		RunStatus: tailscaleStatus("tailnet.ts.net"),
+		LookupTXT: mockTXT(map[string][]string{
+			"kcompass.tailnet.ts.net": {"v=spf1 include:example.com ~all"},
+		}),
+	})
+	b, err := probe(context.Background())
+	assert.NoError(t, err)
+	assert.Nil(t, b)
 }

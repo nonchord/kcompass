@@ -46,17 +46,22 @@ func NewInitCommand() *cobra.Command {
 				return err
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Backend registered: %s\n", target)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+				"To advertise via DNS auto-discovery: kcompass operator dns %s\n", target)
 			return nil
 		},
 	}
 }
 
 // inferBackendConfig picks a backend type from the argument string.
+// All URL schemes (HTTPS, SSH, git://) map to the git backend; plain paths map to local.
 func inferBackendConfig(target string) config.BackendConfig {
 	switch {
-	case strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://"):
-		return config.BackendConfig{Type: "http", Options: map[string]interface{}{"url": target}}
-	case strings.HasPrefix(target, "git@") || strings.HasPrefix(target, "git://") || strings.HasPrefix(target, "ssh://"):
+	case strings.HasPrefix(target, "https://"),
+		strings.HasPrefix(target, "http://"),
+		strings.HasPrefix(target, "git@"),
+		strings.HasPrefix(target, "git://"),
+		strings.HasPrefix(target, "ssh://"):
 		return config.BackendConfig{Type: "git", Options: map[string]interface{}{"url": target}}
 	default:
 		return config.BackendConfig{Type: "local", Options: map[string]interface{}{"path": target}}

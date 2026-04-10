@@ -18,20 +18,19 @@ type NetbirdOptions struct {
 	// RunStatus runs "netbird status --json". If nil, exec.CommandContext is used.
 	// In production this is only attempted when DetectInterface returns true.
 	RunStatus func(ctx context.Context) ([]byte, error)
-	// LookupSRV performs the _kcompass._tcp SRV lookup. If nil, net.DefaultResolver is used.
-	LookupSRV func(ctx context.Context, service, proto, name string) (string, []*net.SRV, error)
+	// LookupTXT performs the kcompass.<mgmt-domain> TXT lookup. If nil, net.DefaultResolver is used.
+	LookupTXT func(ctx context.Context, name string) ([]string, error)
 }
 
 // netbirdStatusJSON is the subset of `netbird status --json` we need.
-// The Management URL contains the domain used for the SRV lookup.
 type netbirdStatusJSON struct {
 	ManagementState struct {
 		URL string `json:"URL"`
 	} `json:"managementState"`
 }
 
-// NetbirdProbe returns a ProbeFunc that detects Netbird and performs an
-// SRV lookup for _kcompass._tcp.<management-domain>.
+// NetbirdProbe returns a ProbeFunc that detects Netbird, extracts the management
+// server domain, and looks up a "kcompass.<domain>" TXT record.
 func NetbirdProbe(opts NetbirdOptions) ProbeFunc {
 	if opts.DetectInterface == nil {
 		opts.DetectInterface = func() bool {
@@ -49,8 +48,8 @@ func NetbirdProbe(opts NetbirdOptions) ProbeFunc {
 			return exec.CommandContext(ctx, "netbird", "status", "--json").Output()
 		}
 	}
-	if opts.LookupSRV == nil {
-		opts.LookupSRV = net.DefaultResolver.LookupSRV
+	if opts.LookupTXT == nil {
+		opts.LookupTXT = net.DefaultResolver.LookupTXT
 	}
 
 	return func(ctx context.Context) (backend.Backend, error) {
@@ -62,12 +61,11 @@ func NetbirdProbe(opts NetbirdOptions) ProbeFunc {
 		if err := json.Unmarshal(data, &st); err != nil || st.ManagementState.URL == "" {
 			return nil, nil
 		}
-		// Extract the hostname from the management URL.
 		domain := mgmtURLToDomain(st.ManagementState.URL)
 		if domain == "" {
 			return nil, nil
 		}
-		return srvToHTTPBackend(ctx, domain, opts.LookupSRV)
+		return txtBackend(ctx, domain, opts.LookupTXT)
 	}
 }
 
@@ -75,7 +73,6 @@ func NetbirdProbe(opts NetbirdOptions) ProbeFunc {
 func mgmtURLToDomain(rawURL string) string {
 	host, _, err := net.SplitHostPort(stripScheme(rawURL))
 	if err != nil {
-		// No port present; treat whole stripped value as host.
 		host = stripScheme(rawURL)
 	}
 	return host

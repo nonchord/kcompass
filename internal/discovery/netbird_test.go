@@ -25,19 +25,21 @@ func TestNetbirdProbeFound(t *testing.T) {
 	probe := discovery.NetbirdProbe(discovery.NetbirdOptions{
 		DetectInterface: func() bool { return true },
 		RunStatus:       netbirdStatus("https://app.netbird.io:443"),
-		LookupSRV:       mockSRV("kcompass.app.netbird.io.", 8443),
+		LookupTXT: mockTXT(map[string][]string{
+			"kcompass.app.netbird.io": {"v=kc1; backend=https://github.com/company/clusters"},
+		}),
 	})
 	b, err := probe(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, b)
-	assert.Contains(t, b.Name(), "app.netbird.io")
+	assert.Contains(t, b.Name(), "github.com")
 }
 
 func TestNetbirdProbeInterfaceAbsent(t *testing.T) {
 	probe := discovery.NetbirdProbe(discovery.NetbirdOptions{
 		DetectInterface: func() bool { return false },
 		RunStatus:       netbirdStatusErr(errors.New("not running")),
-		LookupSRV:       mockSRV("irrelevant.", 8443),
+		LookupTXT:       mockTXT(map[string][]string{}),
 	})
 	b, err := probe(context.Background())
 	assert.NoError(t, err)
@@ -48,7 +50,7 @@ func TestNetbirdProbeStatusFails(t *testing.T) {
 	probe := discovery.NetbirdProbe(discovery.NetbirdOptions{
 		DetectInterface: func() bool { return true },
 		RunStatus:       netbirdStatusErr(errors.New("netbird not installed")),
-		LookupSRV:       mockSRV("irrelevant.", 8443),
+		LookupTXT:       mockTXT(map[string][]string{}),
 	})
 	b, err := probe(context.Background())
 	assert.NoError(t, err)
@@ -59,7 +61,7 @@ func TestNetbirdProbeInvalidJSON(t *testing.T) {
 	probe := discovery.NetbirdProbe(discovery.NetbirdOptions{
 		DetectInterface: func() bool { return true },
 		RunStatus:       func(_ context.Context) ([]byte, error) { return []byte("bad json"), nil },
-		LookupSRV:       mockSRV("irrelevant.", 8443),
+		LookupTXT:       mockTXT(map[string][]string{}),
 	})
 	b, err := probe(context.Background())
 	assert.NoError(t, err)
@@ -72,42 +74,55 @@ func TestNetbirdProbeEmptyURL(t *testing.T) {
 		RunStatus: func(_ context.Context) ([]byte, error) {
 			return []byte(`{"managementState":{"URL":""}}`), nil
 		},
-		LookupSRV: mockSRV("irrelevant.", 8443),
+		LookupTXT: mockTXT(map[string][]string{}),
 	})
 	b, err := probe(context.Background())
 	assert.NoError(t, err)
 	assert.Nil(t, b)
 }
 
-func TestNetbirdProbeNoSRVRecord(t *testing.T) {
+func TestNetbirdProbeNoTXTRecord(t *testing.T) {
 	probe := discovery.NetbirdProbe(discovery.NetbirdOptions{
 		DetectInterface: func() bool { return true },
 		RunStatus:       netbirdStatus("https://mgmt.company.com:443"),
-		LookupSRV:       mockSRVEmpty(),
+		LookupTXT:       mockTXT(map[string][]string{}),
 	})
 	b, err := probe(context.Background())
 	assert.NoError(t, err)
 	assert.Nil(t, b)
 }
 
-func TestNetbirdProbeSRVError(t *testing.T) {
+func TestNetbirdProbeTXTError(t *testing.T) {
 	probe := discovery.NetbirdProbe(discovery.NetbirdOptions{
 		DetectInterface: func() bool { return true },
 		RunStatus:       netbirdStatus("https://mgmt.company.com:443"),
-		LookupSRV:       mockSRVErr(errors.New("NXDOMAIN")),
+		LookupTXT: func(_ context.Context, _ string) ([]string, error) {
+			return nil, errors.New("NXDOMAIN")
+		},
 	})
 	b, err := probe(context.Background())
 	assert.NoError(t, err)
 	assert.Nil(t, b)
 }
 
-// TestNetbirdProbeDefaultInterfaceAbsent exercises the default RunStatus path
-// where the wt0 interface is absent — it should return nil without forking a subprocess.
+func TestNetbirdProbeURLWithoutPort(t *testing.T) {
+	probe := discovery.NetbirdProbe(discovery.NetbirdOptions{
+		DetectInterface: func() bool { return true },
+		RunStatus:       netbirdStatus("https://mgmt.company.com"),
+		LookupTXT: mockTXT(map[string][]string{
+			"kcompass.mgmt.company.com": {"v=kc1; backend=git@github.com:company/clusters"},
+		}),
+	})
+	b, err := probe(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, b)
+	assert.Contains(t, b.Name(), "github.com")
+}
+
 func TestNetbirdProbeDefaultInterfaceAbsent(t *testing.T) {
 	probe := discovery.NetbirdProbe(discovery.NetbirdOptions{
 		DetectInterface: func() bool { return false },
-		// RunStatus is intentionally nil to use the default implementation.
-		LookupSRV: mockSRV("irrelevant.", 8443),
+		LookupTXT:       mockTXT(map[string][]string{}),
 	})
 	b, err := probe(context.Background())
 	assert.NoError(t, err)
@@ -118,22 +133,25 @@ func TestNetbirdProbeHTTPScheme(t *testing.T) {
 	probe := discovery.NetbirdProbe(discovery.NetbirdOptions{
 		DetectInterface: func() bool { return true },
 		RunStatus:       netbirdStatus("http://mgmt.internal:80"),
-		LookupSRV:       mockSRV("kcompass.mgmt.internal.", 443),
+		LookupTXT: mockTXT(map[string][]string{
+			"kcompass.mgmt.internal": {"v=kc1; backend=https://github.com/company/clusters"},
+		}),
 	})
 	b, err := probe(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, b)
-	assert.Contains(t, b.Name(), "mgmt.internal")
+	assert.Contains(t, b.Name(), "github.com")
 }
 
-func TestNetbirdProbeURLWithoutPort(t *testing.T) {
+func TestNetbirdProbeWrongTXTFormat(t *testing.T) {
 	probe := discovery.NetbirdProbe(discovery.NetbirdOptions{
 		DetectInterface: func() bool { return true },
-		RunStatus:       netbirdStatus("https://mgmt.company.com"),
-		LookupSRV:       mockSRV("kcompass.mgmt.company.com.", 443),
+		RunStatus:       netbirdStatus("https://mgmt.company.com:443"),
+		LookupTXT: mockTXT(map[string][]string{
+			"kcompass.mgmt.company.com": {"v=spf1 include:example.com ~all"},
+		}),
 	})
 	b, err := probe(context.Background())
-	require.NoError(t, err)
-	require.NotNil(t, b)
-	assert.Contains(t, b.Name(), "mgmt.company.com")
+	assert.NoError(t, err)
+	assert.Nil(t, b)
 }
