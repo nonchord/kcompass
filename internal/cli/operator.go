@@ -18,6 +18,7 @@ func NewOperatorCommand() *cobra.Command {
 		Short: "Tools for operators publishing a kcompass registry",
 	}
 	cmd.AddCommand(NewOperatorDNSCommand())
+	cmd.AddCommand(NewOperatorAddCommand())
 	return cmd
 }
 
