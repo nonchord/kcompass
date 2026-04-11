@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"text/tabwriter"
 
@@ -29,6 +30,17 @@ func NewListCommand() *cobra.Command {
 
 			records, err := reg.List(cmd.Context())
 			if err != nil {
+				if errors.Is(err, backend.ErrAccessDenied) {
+					cmd.SilenceErrors = true
+					cmd.SilenceUsage = true
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
+						"You don't have access to this cluster inventory.")
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
+						"Check that your SSH key or git token is configured for the backend,")
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
+						"and that you've been granted access to the repository.")
+					return err
+				}
 				return fmt.Errorf("list: %w", err)
 			}
 
