@@ -64,6 +64,13 @@ func loadOrEmpty(path string) (*clientcmdapi.Config, error) {
 // numeric suffix is appended, and context cluster/user refs are rewritten
 // to point at the renamed targets. Returns the final context name the
 // caller should switch to.
+//
+// When a slot is reused (content matched), the destination entry is left
+// in place rather than overwritten. For contexts this is load-bearing: it
+// preserves the user's per-context namespace preference set via
+// `kubectl config set-context --current --namespace=foo` across repeated
+// connects. For clusters and users it's a small optimization — the content
+// was already equal so either behavior is semantically equivalent.
 func mergeInto(dst, src *clientcmdapi.Config) (string, error) {
 	// Determine the incoming context name (use the first one if multiple).
 	var srcContext string
@@ -76,20 +83,24 @@ func mergeInto(dst, src *clientcmdapi.Config) (string, error) {
 	// rewrite its cluster ref when a collision forced a suffix.
 	clusterRename := map[string]string{}
 	for name, cluster := range src.Clusters {
-		final := resolveMergeName(dst.Clusters, name, func(existing *clientcmdapi.Cluster) bool {
+		final, reuse := resolveMergeName(dst.Clusters, name, func(existing *clientcmdapi.Cluster) bool {
 			return equalCluster(existing, cluster)
 		})
-		dst.Clusters[final] = cluster
+		if !reuse {
+			dst.Clusters[final] = cluster
+		}
 		clusterRename[name] = final
 	}
 
 	// Pass 2: merge authinfos with the same rename-tracking.
 	userRename := map[string]string{}
 	for name, user := range src.AuthInfos {
-		final := resolveMergeName(dst.AuthInfos, name, func(existing *clientcmdapi.AuthInfo) bool {
+		final, reuse := resolveMergeName(dst.AuthInfos, name, func(existing *clientcmdapi.AuthInfo) bool {
 			return equalAuthInfo(existing, user)
 		})
-		dst.AuthInfos[final] = user
+		if !reuse {
+			dst.AuthInfos[final] = user
+		}
 		userRename[name] = final
 	}
 
@@ -97,7 +108,8 @@ func mergeInto(dst, src *clientcmdapi.Config) (string, error) {
 	// name; if the cluster/user got renamed in passes 1 or 2, rewrite the
 	// ref on a copy so the stored context points at the right targets.
 	// Then compare the rewritten value against the dst slot for content
-	// equality, so re-running connect is idempotent end-to-end.
+	// equality (ignoring namespace — see equalContext), so re-running
+	// connect is idempotent and does not overwrite a user's namespace.
 	finalContext := srcContext
 	for name, ctx := range src.Contexts {
 		rewritten := *ctx // copy the struct so we don't mutate src
@@ -107,42 +119,50 @@ func mergeInto(dst, src *clientcmdapi.Config) (string, error) {
 		if renamed, ok := userRename[ctx.AuthInfo]; ok {
 			rewritten.AuthInfo = renamed
 		}
-		final := resolveMergeName(dst.Contexts, name, func(existing *clientcmdapi.Context) bool {
+		final, reuse := resolveMergeName(dst.Contexts, name, func(existing *clientcmdapi.Context) bool {
 			return equalContext(existing, &rewritten)
 		})
 		if name == srcContext {
 			finalContext = final
 		}
-		dst.Contexts[final] = &rewritten
+		if !reuse {
+			dst.Contexts[final] = &rewritten
+		}
 	}
 
 	return finalContext, nil
 }
 
 // resolveMergeName returns the name under which a new entry should be
-// stored in m. Three outcomes:
+// stored in m, along with a flag indicating whether the chosen slot
+// already holds content-equivalent data. Three outcomes:
 //
-//  1. m has no entry at name → returns name (new slot)
+//  1. m has no entry at name → returns (name, false) — write to a new slot
 //  2. m has an entry at name and equals(existing) reports true → returns
-//     name (reuse the existing slot, idempotent)
+//     (name, true) — reuse the slot, do NOT overwrite
 //  3. m has an entry at name with different content → tries name-1, name-2,
-//     … until it finds either a free slot OR one that equals reports true
+//     … until it finds either a free slot (returns (candidate, false)) OR
+//     one that equals reports true (returns (candidate, true))
 //
 // Case (2) is what makes `kcompass connect` idempotent when re-run against
 // the same cluster: the second call reuses the slot the first call wrote,
-// instead of producing a fresh name-1 suffix every time.
-func resolveMergeName[V any](m map[string]V, name string, equals func(V) bool) string {
-	if existing, exists := m[name]; !exists || equals(existing) {
-		return name
+// instead of producing a fresh name-1 suffix every time. The reuse flag
+// lets callers skip the write entirely, which for contexts is critical
+// because it preserves the user's namespace preference.
+func resolveMergeName[V any](m map[string]V, name string, equals func(V) bool) (string, bool) {
+	if existing, exists := m[name]; !exists {
+		return name, false
+	} else if equals(existing) {
+		return name, true
 	}
 	for i := 1; ; i++ {
 		candidate := fmt.Sprintf("%s-%d", name, i)
 		existing, exists := m[candidate]
 		if !exists {
-			return candidate
+			return candidate, false
 		}
 		if equals(existing) {
-			return candidate
+			return candidate, true
 		}
 	}
 }
@@ -174,11 +194,22 @@ func equalAuthInfo(a, b *clientcmdapi.AuthInfo) bool {
 	return bytes.Equal(marshalJSON(a), marshalJSON(b))
 }
 
+// equalContext compares two contexts ignoring the Namespace field. The
+// namespace under a given context is a user-level preference (managed via
+// `kubectl config set-context --current --namespace=foo`), not part of
+// the identity of the cluster connection. Treating a namespace change as
+// "different content" would defeat idempotency: every `kcompass connect`
+// after a manual namespace switch would either rename to `-1` or clobber
+// the user's choice. Ignoring it here, combined with the reuse flag in
+// resolveMergeName, preserves the user's namespace on re-merge.
 func equalContext(a, b *clientcmdapi.Context) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return bytes.Equal(marshalJSON(a), marshalJSON(b))
+	ac, bc := *a, *b
+	ac.Namespace = ""
+	bc.Namespace = ""
+	return bytes.Equal(marshalJSON(&ac), marshalJSON(&bc))
 }
 
 // marshalJSON returns the canonical json.Marshal output for v. On marshal

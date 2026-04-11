@@ -180,6 +180,38 @@ func TestMergeConflictRewritesContextRefs(t *testing.T) {
 	assert.Equal(t, "https://existing:6443", origCluster.Server)
 }
 
+// TestMergeContextNamespacePreservedOnReconnect simulates the common flow
+// where a user runs `kcompass connect`, then `kubectl config set-context
+// --current --namespace=foo`, then `kcompass connect` again. The second
+// connect must preserve the user's namespace choice — neither rename to
+// -1 nor clobber the namespace with the incoming context's (usually empty)
+// value.
+func TestMergeContextNamespacePreservedOnReconnect(t *testing.T) {
+	path := copyFixture(t, "kubeconfig_empty.yaml")
+
+	// First connect: merge an incoming kubeconfig with no namespace set.
+	_, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	require.NoError(t, err)
+
+	// Simulate `kubectl config set-context --current --namespace=team-a`.
+	cfg, err := kcmd.LoadFromFile(path)
+	require.NoError(t, err)
+	cfg.Contexts["dev-cluster"].Namespace = "team-a"
+	require.NoError(t, kcmd.WriteToFile(*cfg, path))
+
+	// Second connect: merge the same incoming blob again.
+	_, err = kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	require.NoError(t, err)
+
+	// The user's namespace choice must still be there, and no duplicate
+	// context entry should have been created.
+	cfg, err = kcmd.LoadFromFile(path)
+	require.NoError(t, err)
+	assert.Len(t, cfg.Contexts, 1, "no -1 suffix; the context slot is reused")
+	assert.Equal(t, "team-a", cfg.Contexts["dev-cluster"].Namespace,
+		"kcompass connect must not clobber the user's namespace preference")
+}
+
 // TestMergeCanonicalFormIsStable pins the determinism assumption that
 // underlies the content-equality check: json.Marshal of a clientcmdapi
 // entry must produce the same bytes on every call for structurally
