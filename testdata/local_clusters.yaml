@@ -1,17 +1,41 @@
 clusters:
   - name: cluster1
     description: The production cluster.
-    provider: gke
-    auth: gcloud
-    metadata:
-      project: my-project
-      region: us-east1
-      cluster_id: cluster1
+    kubeconfig:
+      inline: |
+        apiVersion: v1
+        kind: Config
+        clusters:
+          - name: cluster1
+            cluster:
+              server: https://cluster1.example.com:6443
+        contexts:
+          - name: cluster1
+            context:
+              cluster: cluster1
+              user: cluster1-admin
+        current-context: cluster1
+        users:
+          - name: cluster1-admin
+            user:
+              token: fake-token-1
   - name: cluster2
     description: The staging cluster.
-    provider: gke
-    auth: gcloud
-    metadata:
-      project: my-project
-      region: us-east1
-      cluster_id: cluster2
+    kubeconfig:
+      inline: |
+        apiVersion: v1
+        kind: Config
+        clusters:
+          - name: cluster2
+            cluster:
+              server: https://cluster2.example.com:6443
+        contexts:
+          - name: cluster2
+            context:
+              cluster: cluster2
+              user: cluster2-admin
+        current-context: cluster2
+        users:
+          - name: cluster2-admin
+            user:
+              token: fake-token-2

@@ -1,10 +1,8 @@
 clusters:
   - name: dev-cluster
     description: Local dev cluster.
-    provider: generic
-    auth: static
-    metadata:
-      kubeconfig: |
+    kubeconfig:
+      inline: |
         apiVersion: v1
         kind: Config
         clusters:

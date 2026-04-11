@@ -50,7 +50,9 @@ func (b *LocalBackend) Get(_ context.Context, name string) (*ClusterRecord, erro
 	return nil, ErrNotFound
 }
 
-// readClusterFile parses a YAML file in the clusters-list format.
+// readClusterFile parses a YAML file in the clusters-list format and validates
+// each record. A single invalid record fails the whole file with a clear error,
+// so operators learn about broken inventory at parse time rather than connect time.
 func readClusterFile(path string) ([]ClusterRecord, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -62,6 +64,11 @@ func readClusterFile(path string) ([]ClusterRecord, error) {
 	}
 	if cf.Clusters == nil {
 		return []ClusterRecord{}, nil
+	}
+	for i, rec := range cf.Clusters {
+		if err := rec.Validate(); err != nil {
+			return nil, fmt.Errorf("local backend: %s: cluster #%d (%q): %w", path, i, rec.Name, err)
+		}
 	}
 	return cf.Clusters, nil
 }

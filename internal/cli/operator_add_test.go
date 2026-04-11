@@ -16,149 +16,147 @@ import (
 
 // --- Non-interactive (all flags) tests ---
 
-func TestOperatorAddGKEAllFlags(t *testing.T) {
+func TestOperatorAddCommandMode(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	out, err := executeWithConfig(t, cfgPath, "operator", "add",
-		"--provider", "gke",
-		"--name", "prod",
-		"--description", "Production cluster",
-		"--project", "my-project",
-		"--region", "us-east1",
-		"--cluster-id", "prod",
+		"--name", "nonchord-staging",
+		"--description", "Staging cluster",
+		"--command", "tailscale configure kubeconfig nonchord-staging",
 	)
 	require.NoError(t, err)
-	assertValidClusterYAML(t, out, "prod", "gke", "gcloud")
-	assert.Contains(t, out, "my-project")
-	assert.Contains(t, out, "us-east1")
+	rec := assertSingleClusterYAML(t, out, "nonchord-staging")
+	require.NotNil(t, rec.Kubeconfig.Command)
+	assert.Equal(t,
+		[]string{"tailscale", "configure", "kubeconfig", "nonchord-staging"},
+		rec.Kubeconfig.Command)
+	assert.Empty(t, rec.Kubeconfig.Inline)
 }
 
-func TestOperatorAddEKSAllFlags(t *testing.T) {
+func TestOperatorAddInlineMode(t *testing.T) {
+	tmp := t.TempDir()
+	kubeconfig := filepath.Join(tmp, "kc.yaml")
+	const blob = `apiVersion: v1
+kind: Config
+clusters:
+  - name: dev
+    cluster:
+      server: https://127.0.0.1:6443
+contexts:
+  - name: dev
+    context:
+      cluster: dev
+      user: dev
+current-context: dev
+users:
+  - name: dev
+    user:
+      token: t
+`
+	require.NoError(t, os.WriteFile(kubeconfig, []byte(blob), 0o600))
+
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	out, err := executeWithConfig(t, cfgPath, "operator", "add",
+		"--name", "dev-laptop",
+		"--kubeconfig", kubeconfig,
+	)
+	require.NoError(t, err)
+	rec := assertSingleClusterYAML(t, out, "dev-laptop")
+	assert.Equal(t, blob, rec.Kubeconfig.Inline)
+	assert.Empty(t, rec.Kubeconfig.Command)
+}
+
+func TestOperatorAddCommandSplitsOnWhitespace(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	out, err := executeWithConfig(t, cfgPath, "operator", "add",
-		"--provider", "eks",
-		"--name", "staging",
-		"--account-id", "123456789012",
-		"--region", "us-west-2",
-		"--cluster-name", "staging",
+		"--name", "prod-gke",
+		"--command", "  gcloud  container  clusters  get-credentials  prod  ",
 	)
 	require.NoError(t, err)
-	assertValidClusterYAML(t, out, "staging", "eks", "aws")
-	assert.Contains(t, out, "123456789012")
-}
-
-func TestOperatorAddGenericAllFlags(t *testing.T) {
-	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
-	out, err := executeWithConfig(t, cfgPath, "operator", "add",
-		"--provider", "generic",
-		"--name", "homelab",
-		"--server", "https://192.168.1.100:6443",
-	)
-	require.NoError(t, err)
-	assertValidClusterYAML(t, out, "homelab", "generic", "static")
-	assert.Contains(t, out, "192.168.1.100")
-}
-
-func TestOperatorAddClusterIDDefaultsToName(t *testing.T) {
-	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
-	out, err := executeWithConfig(t, cfgPath, "operator", "add",
-		"--provider", "gke",
-		"--name", "prod",
-		"--project", "my-project",
-		"--region", "us-east1",
-		// no --cluster-id: should default to name
-	)
-	require.NoError(t, err)
-	assert.Contains(t, out, "cluster_id: prod")
-}
-
-func TestOperatorAddEKSClusterNameDefaultsToName(t *testing.T) {
-	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
-	out, err := executeWithConfig(t, cfgPath, "operator", "add",
-		"--provider", "eks",
-		"--name", "staging",
-		"--account-id", "123456789012",
-		"--region", "us-west-2",
-		// no --cluster-name: should default to name
-	)
-	require.NoError(t, err)
-	assert.Contains(t, out, "cluster_name: staging")
-}
-
-func TestOperatorAddMissingProviderErrors(t *testing.T) {
-	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
-	_, err := executeWithConfig(t, cfgPath, "operator", "add",
-		"--name", "prod",
-		"--project", "my-project",
-		"--region", "us-east1",
-	)
-	assert.Error(t, err)
+	rec := assertSingleClusterYAML(t, out, "prod-gke")
+	assert.Equal(t,
+		[]string{"gcloud", "container", "clusters", "get-credentials", "prod"},
+		rec.Kubeconfig.Command)
 }
 
 func TestOperatorAddMissingNameErrors(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	_, err := executeWithConfig(t, cfgPath, "operator", "add",
-		"--provider", "gke",
-		"--project", "my-project",
-		"--region", "us-east1",
+		"--command", "tailscale configure kubeconfig x",
 	)
 	assert.Error(t, err)
 }
 
-func TestOperatorAddUnknownProviderErrors(t *testing.T) {
+func TestOperatorAddMissingCredSourceErrors(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	_, err := executeWithConfig(t, cfgPath, "operator", "add",
-		"--provider", "aks",
-		"--name", "prod",
+		"--name", "x",
 	)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "unknown provider")
+	assert.Contains(t, err.Error(), "--command")
 }
 
-func TestOperatorAddGKEMissingProjectErrors(t *testing.T) {
-	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+func TestOperatorAddBothModesErrors(t *testing.T) {
+	tmp := t.TempDir()
+	kubeconfig := filepath.Join(tmp, "kc.yaml")
+	require.NoError(t, os.WriteFile(kubeconfig, []byte("apiVersion: v1\nkind: Config\n"), 0o600))
+
+	cfgPath := filepath.Join(tmp, "config.yaml")
 	_, err := executeWithConfig(t, cfgPath, "operator", "add",
-		"--provider", "gke",
-		"--name", "prod",
-		"--region", "us-east1",
-		// missing --project
+		"--name", "x",
+		"--command", "echo hi",
+		"--kubeconfig", kubeconfig,
 	)
 	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+}
+
+func TestOperatorAddEmptyKubeconfigFileErrors(t *testing.T) {
+	tmp := t.TempDir()
+	kubeconfig := filepath.Join(tmp, "kc.yaml")
+	require.NoError(t, os.WriteFile(kubeconfig, []byte{}, 0o600))
+
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	_, err := executeWithConfig(t, cfgPath, "operator", "add",
+		"--name", "x",
+		"--kubeconfig", kubeconfig,
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "empty")
 }
 
 func TestOperatorAddOutputToFile(t *testing.T) {
-	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
-	outFile := filepath.Join(t.TempDir(), "clusters.yaml")
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	outFile := filepath.Join(tmp, "clusters.yaml")
 
 	_, err := executeWithConfig(t, cfgPath, "operator", "add",
-		"--provider", "gke",
 		"--name", "prod",
-		"--project", "my-project",
-		"--region", "us-east1",
+		"--command", "tailscale configure kubeconfig prod",
 		"--output", outFile,
 	)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(outFile)
 	require.NoError(t, err)
-	assertValidClusterYAML(t, string(data), "prod", "gke", "gcloud")
+	rec := assertSingleClusterYAML(t, string(data), "prod")
+	assert.Equal(t, []string{"tailscale", "configure", "kubeconfig", "prod"}, rec.Kubeconfig.Command)
 }
 
 func TestOperatorAddAppendsToExistingFile(t *testing.T) {
-	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
-	outFile := filepath.Join(t.TempDir(), "clusters.yaml")
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	outFile := filepath.Join(tmp, "clusters.yaml")
 
-	// First cluster.
 	_, err := executeWithConfig(t, cfgPath, "operator", "add",
-		"--provider", "gke", "--name", "prod",
-		"--project", "my-project", "--region", "us-east1",
+		"--name", "prod",
+		"--command", "tailscale configure kubeconfig prod",
 		"--output", outFile,
 	)
 	require.NoError(t, err)
 
-	// Second cluster.
 	_, err = executeWithConfig(t, cfgPath, "operator", "add",
-		"--provider", "eks", "--name", "staging",
-		"--account-id", "123456789012", "--region", "us-west-2",
+		"--name", "staging",
+		"--command", "tailscale configure kubeconfig staging",
 		"--output", outFile,
 	)
 	require.NoError(t, err)
@@ -177,12 +175,13 @@ func TestOperatorAddAppendsToExistingFile(t *testing.T) {
 }
 
 func TestOperatorAddOutputToFileShowsConfirmation(t *testing.T) {
-	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
-	outFile := filepath.Join(t.TempDir(), "clusters.yaml")
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	outFile := filepath.Join(tmp, "clusters.yaml")
 
 	out, err := executeWithConfig(t, cfgPath, "operator", "add",
-		"--provider", "gke", "--name", "prod",
-		"--project", "my-project", "--region", "us-east1",
+		"--name", "prod",
+		"--command", "tailscale configure kubeconfig prod",
 		"--output", outFile,
 	)
 	require.NoError(t, err)
@@ -190,7 +189,7 @@ func TestOperatorAddOutputToFileShowsConfirmation(t *testing.T) {
 	assert.Contains(t, out, outFile)
 }
 
-// --- Prompt (interactive path) unit tests ---
+// --- Prompt unit tests ---
 
 func TestPromptReturnsInput(t *testing.T) {
 	in := strings.NewReader("my-cluster\n")
@@ -202,7 +201,7 @@ func TestPromptReturnsInput(t *testing.T) {
 }
 
 func TestPromptUsesDefault(t *testing.T) {
-	in := strings.NewReader("\n") // user just presses Enter
+	in := strings.NewReader("\n")
 	var out strings.Builder
 	val, err := cli.Prompt(&out, in, "Cluster name", "default-name")
 	require.NoError(t, err)
@@ -211,7 +210,7 @@ func TestPromptUsesDefault(t *testing.T) {
 }
 
 func TestPromptEOFReturnsDefault(t *testing.T) {
-	in := strings.NewReader("") // immediate EOF
+	in := strings.NewReader("")
 	var out strings.Builder
 	val, err := cli.Prompt(&out, in, "Cluster name", "fallback")
 	require.NoError(t, err)
@@ -236,21 +235,19 @@ func TestPromptNoDefaultOmitsBrackets(t *testing.T) {
 
 // --- helpers ---
 
-func assertValidClusterYAML(t *testing.T, yamlStr, name, provider, auth string) {
+func assertSingleClusterYAML(t *testing.T, yamlStr, name string) backend.ClusterRecord {
 	t.Helper()
 	type clusterFile struct {
 		Clusters []backend.ClusterRecord `yaml:"clusters"`
 	}
 	var cf clusterFile
 	require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &cf), "output is not valid YAML")
-	require.NotEmpty(t, cf.Clusters, "expected at least one cluster in output")
-	found := false
+	require.NotEmpty(t, cf.Clusters)
 	for _, c := range cf.Clusters {
 		if c.Name == name {
-			assert.Equal(t, provider, c.Provider)
-			assert.Equal(t, auth, c.Auth)
-			found = true
+			return c
 		}
 	}
-	assert.True(t, found, "cluster %q not found in output", name)
+	t.Fatalf("cluster %q not found in output", name)
+	return backend.ClusterRecord{}
 }
