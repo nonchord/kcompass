@@ -2,6 +2,7 @@ package discovery_test
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,8 +31,14 @@ func TestDefaultProbesLength(t *testing.T) {
 }
 
 func TestDefaultProbesAllReturnNilInCI(t *testing.T) {
-	// In a CI environment without Tailscale/Netbird/DNS/cloud credentials,
-	// all default probes should return (nil, nil) gracefully.
+	// This test verifies that in a pristine environment (CI with no Tailscale,
+	// Netbird, DNS search domains, or cloud credentials) all default probes
+	// return (nil, nil) gracefully. DefaultProbes() reads real system state, so
+	// on any dev machine attached to a real network with a published kcompass
+	// TXT record it will legitimately return a backend — skip there.
+	if os.Getenv("CI") == "" {
+		t.Skip("DefaultProbes() reads real system state; test only valid in CI")
+	}
 	probes := discovery.DefaultProbes()
 	for i, probe := range probes {
 		b, err := probe(context.Background())

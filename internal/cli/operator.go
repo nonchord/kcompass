@@ -24,7 +24,10 @@ func NewOperatorCommand() *cobra.Command {
 
 // NewOperatorDNSCommand creates the `kcompass operator dns <url>` command.
 func NewOperatorDNSCommand() *cobra.Command {
-	var verify bool
+	var (
+		verify    bool
+		hostnames []string
+	)
 	cmd := &cobra.Command{
 		Use:   "dns <url>",
 		Short: "Print DNS TXT records to advertise a backend via auto-discovery",
@@ -32,14 +35,67 @@ func NewOperatorDNSCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domains := discovery.DetectNetworkDomains(cmd.Context())
 			printDNSRecords(cmd.OutOrStdout(), args[0], domains)
-			if verify {
-				verifyDNSRecords(cmd.Context(), cmd.OutOrStdout(), args[0], domains)
+			if verify || len(hostnames) > 0 {
+				verifyDNSRecords(cmd.Context(), cmd.OutOrStdout(), args[0], domains, hostnames)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&verify, "verify", false, "verify that TXT records are published and match")
+	cmd.Flags().StringSliceVar(&hostnames, "hostname", nil,
+		"verify these FQDNs instead of the auto-detected ones (repeatable, implies --verify)")
 	return cmd
+}
+
+// corporateDNSDomains returns the subset of domains.DNS that is not claimed by
+// a more specific source (Tailscale or Netbird). When Tailscale pushes search
+// paths to the OS resolver (visible via `tailscale dns status --json`), those
+// entries appear in /etc/resolv.conf with no provenance; attributing them back
+// to Tailscale reads cleaner and avoids the same hostname showing up twice in
+// the output.
+func corporateDNSDomains(domains discovery.NetworkDomains) []string {
+	claimed := map[string]bool{}
+	if domains.Tailscale != "" {
+		claimed[domains.Tailscale] = true
+	}
+	for _, d := range domains.TailscaleSearchPaths {
+		claimed[d] = true
+	}
+	if domains.Netbird != "" {
+		claimed[domains.Netbird] = true
+	}
+	var out []string
+	for _, d := range domains.DNS {
+		if claimed[d] {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// tailscaleHostDomains returns the list of domains that should be printed
+// under the "Tailscale" row — the MagicDNS suffix plus any extra search
+// paths Tailscale is pushing, deduplicated and stable-ordered (MagicDNS
+// suffix first when it's in the set).
+func tailscaleHostDomains(domains discovery.NetworkDomains) []string {
+	if domains.Tailscale == "" && len(domains.TailscaleSearchPaths) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	add := func(d string) {
+		if d == "" || seen[d] {
+			return
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	add(domains.Tailscale)
+	for _, d := range domains.TailscaleSearchPaths {
+		add(d)
+	}
+	return out
 }
 
 func printDNSRecords(out io.Writer, backendURL string, domains discovery.NetworkDomains) {
@@ -57,9 +113,10 @@ func printDNSRecords(out io.Writer, backendURL string, domains discovery.Network
 	p("  Network        Hostname")
 	p("  ─────────────────────────────────────────────────────────────────")
 
-	if len(domains.DNS) > 0 {
-		pf("  Corporate DNS  kcompass.%s\n", domains.DNS[0])
-		for _, d := range domains.DNS[1:] {
+	corpDomains := corporateDNSDomains(domains)
+	if len(corpDomains) > 0 {
+		pf("  Corporate DNS  kcompass.%s\n", corpDomains[0])
+		for _, d := range corpDomains[1:] {
 			pf("                 kcompass.%s\n", d)
 		}
 	} else {
@@ -67,8 +124,11 @@ func printDNSRecords(out io.Writer, backendURL string, domains discovery.Network
 		p("                 e.g. kcompass.internal.company.com")
 	}
 
-	if domains.Tailscale != "" {
-		pf("  Tailscale      kcompass.%s\n", domains.Tailscale)
+	if tsDomains := tailscaleHostDomains(domains); len(tsDomains) > 0 {
+		pf("  Tailscale      kcompass.%s\n", tsDomains[0])
+		for _, d := range tsDomains[1:] {
+			pf("                 kcompass.%s\n", d)
+		}
 	} else {
 		p("  Tailscale      kcompass.<tailnet-magic-dns-suffix>")
 		p("                 e.g. kcompass.your-tailnet.ts.net")
@@ -84,15 +144,24 @@ func printDNSRecords(out io.Writer, backendURL string, domains discovery.Network
 	p("")
 	p("Full example (corporate DNS, replace search domain with yours):")
 	exampleDomain := "internal.company.com"
-	if len(domains.DNS) > 0 {
-		exampleDomain = domains.DNS[0]
+	if len(corpDomains) > 0 {
+		exampleDomain = corpDomains[0]
 	}
 	pf("  kcompass.%s. 300 IN TXT %s\n", exampleDomain, txtValue)
 }
 
-// verifyDNSRecords performs live TXT lookups for each detected domain and
-// prints whether the expected kcompass record is present and correct.
-func verifyDNSRecords(ctx context.Context, out io.Writer, backendURL string, domains discovery.NetworkDomains) {
+// verifyDNSRecords performs live TXT lookups and prints whether the expected
+// kcompass record is present and correct. When explicitHostnames is non-empty,
+// only those FQDNs are checked (and the detected domain list is ignored);
+// otherwise the detected domain list is used, with duplicates removed so the
+// same hostname is never queried twice when multiple probes happen to agree.
+func verifyDNSRecords(
+	ctx context.Context,
+	out io.Writer,
+	backendURL string,
+	domains discovery.NetworkDomains,
+	explicitHostnames []string,
+) {
 	p := func(s string) { _, _ = fmt.Fprintln(out, s) }
 	pf := func(format string, a ...interface{}) { _, _ = fmt.Fprintf(out, format, a...) }
 
@@ -101,15 +170,36 @@ func verifyDNSRecords(ctx context.Context, out io.Writer, backendURL string, dom
 		hostname string
 	}
 
-	var checks []entry
-	for _, d := range domains.DNS {
-		checks = append(checks, entry{"Corporate DNS", "kcompass." + d})
+	var (
+		checks []entry
+		seen   = map[string]bool{}
+	)
+	add := func(label, hostname string) {
+		if seen[hostname] {
+			return
+		}
+		seen[hostname] = true
+		checks = append(checks, entry{label, hostname})
 	}
-	if domains.Tailscale != "" {
-		checks = append(checks, entry{"Tailscale", "kcompass." + domains.Tailscale})
-	}
-	if domains.Netbird != "" {
-		checks = append(checks, entry{"Netbird", "kcompass." + domains.Netbird})
+
+	if len(explicitHostnames) > 0 {
+		for _, h := range explicitHostnames {
+			add("Explicit", h)
+		}
+	} else {
+		// Attribute Tailscale-pushed search paths to Tailscale, not Corporate
+		// DNS, even though they're present in /etc/resolv.conf. Order matters:
+		// adding Tailscale first means any subsequent Corporate DNS entry with
+		// the same hostname is silently skipped by the dedup in `add`.
+		for _, d := range tailscaleHostDomains(domains) {
+			add("Tailscale", "kcompass."+d)
+		}
+		if domains.Netbird != "" {
+			add("Netbird", "kcompass."+domains.Netbird)
+		}
+		for _, d := range corporateDNSDomains(domains) {
+			add("Corporate DNS", "kcompass."+d)
+		}
 	}
 
 	p("")
@@ -117,7 +207,8 @@ func verifyDNSRecords(ctx context.Context, out io.Writer, backendURL string, dom
 
 	if len(checks) == 0 {
 		p("")
-		p("  No network domains detected — connect to a managed network and try again.")
+		p("  No network domains detected — connect to a managed network and try again,")
+		p("  or pass --hostname <fqdn> to verify a specific record.")
 		return
 	}
 

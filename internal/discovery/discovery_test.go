@@ -17,8 +17,8 @@ import (
 // stubBackend is a minimal backend.Backend used in probe results.
 type stubBackend struct{ name string }
 
-func (s *stubBackend) Name() string                                              { return s.name }
-func (s *stubBackend) List(_ context.Context) ([]backend.ClusterRecord, error)  { return nil, nil }
+func (s *stubBackend) Name() string                                            { return s.name }
+func (s *stubBackend) List(_ context.Context) ([]backend.ClusterRecord, error) { return nil, nil }
 func (s *stubBackend) Get(_ context.Context, _ string) (*backend.ClusterRecord, error) {
 	return nil, backend.ErrNotFound
 }
