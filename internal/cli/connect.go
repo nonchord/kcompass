@@ -29,14 +29,7 @@ func NewConnectCommand() *cobra.Command {
 			rec, err := reg.Get(cmd.Context(), name)
 			if err != nil {
 				if errors.Is(err, backend.ErrAccessDenied) {
-					cmd.SilenceErrors = true
-					cmd.SilenceUsage = true
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
-						"You don't have access to this cluster inventory.")
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
-						"Check that your SSH key or git token is configured for the backend,")
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
-						"and that you've been granted access to the repository.")
+					printAccessDenied(cmd)
 					return err
 				}
 				return fmt.Errorf("connect: %w", err)

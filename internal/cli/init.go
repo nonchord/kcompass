@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/nonchord/kcompass/internal/backend"
 	"github.com/nonchord/kcompass/internal/discovery"
 	"github.com/nonchord/kcompass/pkg/config"
 )
@@ -21,7 +22,8 @@ var lookupTXT = net.DefaultResolver.LookupTXT
 
 // NewInitCommand creates the `kcompass init` command.
 func NewInitCommand() *cobra.Command {
-	return &cobra.Command{
+	var skipVerify bool
+	cmd := &cobra.Command{
 		Use:   "init <url-or-path-or-zone>",
 		Short: "Register a backend",
 		Long: `Register a backend by URL, local file path, or DNS zone.
@@ -31,7 +33,13 @@ up the TXT record at kcompass.<zone> and register the resolved backend URL.
 This is the same record format the auto-discovery probes consume, but triggered
 explicitly — useful when your machine's resolver isn't configured for the zone
 yet, or when you want to bootstrap against an organization you don't yet share
-a network with.`,
+a network with.
+
+By default, init verifies it can actually read the backend before writing it
+to the config. This catches common mistakes like misspelled paths or private
+repositories you haven't been granted access to, so you find out immediately
+instead of on the next kcompass list. Pass --skip-verify to bypass (e.g. when
+pre-configuring a machine before joining the network).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := args[0]
@@ -45,6 +53,15 @@ a network with.`,
 					_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 						"Resolved kcompass.%s → %s\n", target, resolved)
 					target = resolved
+				}
+			}
+
+			// Verify the target is actually reachable and parseable before we
+			// persist it. This prevents silently registering a backend that
+			// will fail on every subsequent `kcompass list`.
+			if !skipVerify {
+				if err := verifyBackend(cmd, target); err != nil {
+					return err
 				}
 			}
 
@@ -81,6 +98,30 @@ a network with.`,
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&skipVerify, "skip-verify", false,
+		"register the backend without verifying it can be read (for pre-configuring a machine before it can reach the backend)")
+	return cmd
+}
+
+// verifyBackend constructs a backend from the target string and calls List
+// once, so init can fail loudly when the backend is unreachable, misspelled,
+// or inaccessible instead of silently writing a broken entry to config.
+// On backend.ErrAccessDenied the friendly message is printed to stderr; other
+// errors surface as a generic "cannot access" wrap.
+func verifyBackend(cmd *cobra.Command, target string) error {
+	b, err := backend.NewBackendFromURL(target)
+	if err != nil {
+		return fmt.Errorf("init: %w", err)
+	}
+	if _, err := b.List(cmd.Context()); err != nil {
+		if errors.Is(err, backend.ErrAccessDenied) {
+			printAccessDenied(cmd)
+			return err
+		}
+		cmd.SilenceUsage = true
+		return fmt.Errorf("init: cannot access %s: %w", target, err)
+	}
+	return nil
 }
 
 // looksLikeDNSZone reports whether target is plausibly a DNS zone (as opposed
