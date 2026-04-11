@@ -3,6 +3,7 @@ package kubeconfig
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -147,56 +148,46 @@ func resolveMergeName[V any](m map[string]V, name string, equals func(V) bool) s
 }
 
 // equalCluster, equalAuthInfo, and equalContext compare two kubeconfig
-// entries by their on-disk representation: each entry is wrapped in a
-// single-entry Config and written through clientcmd.Write, which is the
-// same serializer used by the persisted kubeconfig. Two entries are equal
-// iff their serialized bytes match — the definition of "equal" that
-// matches what the user would actually see in their kubeconfig file.
+// entries by marshaling each to canonical JSON and comparing the bytes.
+// json.Marshal is deterministic for plain Go structs: struct fields are
+// emitted in declaration order, and map keys are sorted (per encoding/json
+// doc). The clientcmdapi types have no custom MarshalJSON and no fields
+// that hold pointers to shared mutable state, so two structurally-equivalent
+// values always produce identical bytes.
 //
-// clientcmd.Write explicitly omits the LocationOfOrigin bookkeeping field
-// (which differs between a freshly-loaded incoming blob and a persisted
-// entry), so this comparison naturally ignores it without needing a manual
-// zero-out pass.
+// Using json.Marshal directly (rather than routing through clientcmd.Write
+// + a Config wrapper) is simpler and keeps the comparison close to the
+// domain: equality is defined by "would these two values serialize the
+// same way?" LocationOfOrigin is excluded automatically via its `json:"-"`
+// tag on all three types.
 func equalCluster(a, b *clientcmdapi.Cluster) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return bytes.Equal(marshalOne("c", a, nil, nil), marshalOne("c", b, nil, nil))
+	return bytes.Equal(marshalJSON(a), marshalJSON(b))
 }
 
 func equalAuthInfo(a, b *clientcmdapi.AuthInfo) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return bytes.Equal(marshalOne("", nil, a, nil), marshalOne("", nil, b, nil))
+	return bytes.Equal(marshalJSON(a), marshalJSON(b))
 }
 
 func equalContext(a, b *clientcmdapi.Context) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return bytes.Equal(marshalOne("", nil, nil, a), marshalOne("", nil, nil, b))
+	return bytes.Equal(marshalJSON(a), marshalJSON(b))
 }
 
-// marshalOne serializes a single kubeconfig entry (exactly one of c, u, or
-// ctx must be non-nil) through clientcmd.Write by wrapping it in a minimal
-// Config. The returned bytes are canonical: LocationOfOrigin is omitted,
-// field order is stable, and anything clientcmd considers structurally
-// identical will round-trip to the same bytes.
-func marshalOne(key string, c *clientcmdapi.Cluster, u *clientcmdapi.AuthInfo, ctx *clientcmdapi.Context) []byte {
-	cfg := *clientcmdapi.NewConfig()
-	if key == "" {
-		key = "k"
-	}
-	switch {
-	case c != nil:
-		cfg.Clusters[key] = c
-	case u != nil:
-		cfg.AuthInfos[key] = u
-	case ctx != nil:
-		cfg.Contexts[key] = ctx
-	}
-	data, err := clientcmd.Write(cfg)
+// marshalJSON returns the canonical json.Marshal output for v. On marshal
+// failure (which cannot happen for any field layout reachable here, since
+// clientcmdapi types are all JSON-tagged plain structs) the function
+// returns nil, which causes the comparison to treat the pair as unequal
+// and fall through to the rename branch — a safe, conservative default.
+func marshalJSON(v interface{}) []byte {
+	data, err := json.Marshal(v)
 	if err != nil {
 		return nil
 	}

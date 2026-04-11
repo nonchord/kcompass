@@ -180,6 +180,74 @@ func TestMergeConflictRewritesContextRefs(t *testing.T) {
 	assert.Equal(t, "https://existing:6443", origCluster.Server)
 }
 
+// TestMergeCanonicalFormIsStable pins the determinism assumption that
+// underlies the content-equality check: json.Marshal of a clientcmdapi
+// entry must produce the same bytes on every call for structurally
+// identical inputs. A regression here (e.g. a future client-go adding a
+// custom MarshalJSON that randomizes order) would cause false-negative
+// equality checks and a return of the -1/-2 duplicate bug. The test
+// builds a representative entry that exercises the map and slice fields
+// where order tends to drift — exec env vars and extensions — and
+// marshals it 50 times.
+func TestMergeCanonicalFormIsStable(t *testing.T) {
+	path := copyFixture(t, "kubeconfig_empty.yaml")
+	// Incoming kubeconfig with an exec plugin, env vars, and multiple
+	// clusters/users/contexts — representative of what the Tailscale
+	// operator and cloud-provider tools emit.
+	blob := []byte(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://alpha:6443
+    certificate-authority-data: QUJD
+  name: alpha
+- cluster:
+    server: https://beta:6443
+  name: beta
+contexts:
+- context:
+    cluster: alpha
+    user: alpha-user
+    namespace: team-a
+  name: alpha
+current-context: alpha
+users:
+- name: alpha-user
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1
+      command: /usr/local/bin/auth-plugin
+      args: ["--one", "--two", "--three"]
+      env:
+        - name: Z_LAST
+          value: "1"
+        - name: A_FIRST
+          value: "2"
+        - name: M_MID
+          value: "3"
+      interactiveMode: Never
+      provideClusterInfo: false
+- name: beta-user
+  user:
+    token: flat-token
+`)
+	_, err := kubeconfig.MergeStatic(path, blob, true)
+	require.NoError(t, err)
+
+	// Re-merge 50 times. If json.Marshal drifts, even once, the
+	// idempotency check breaks and we get a -1 suffix somewhere.
+	for i := 0; i < 50; i++ {
+		_, err := kubeconfig.MergeStatic(path, blob, true)
+		require.NoError(t, err)
+	}
+
+	cfg, err := kcmd.LoadFromFile(path)
+	require.NoError(t, err)
+	assert.Len(t, cfg.Clusters, 2, "clusters must not grow over repeated merges")
+	assert.Len(t, cfg.AuthInfos, 2, "authinfos must not grow over repeated merges")
+	assert.Len(t, cfg.Contexts, 1, "contexts must not grow over repeated merges")
+}
+
 // TestMergeSameNameDifferentContentStillSuffixes pins the rename behavior
 // when names collide with different content, which is the existing
 // TestMergeConflict case but asserted at the API-level against repeated
