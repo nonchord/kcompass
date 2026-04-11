@@ -20,7 +20,7 @@ Context is set to cluster1.
 
 ## Installation
 
-**Requires Go 1.21 or later.**
+**Requires Go 1.26 or later.**
 
 ```sh
 go install github.com/nonchord/kcompass/cmd/kcompass@latest
@@ -38,21 +38,32 @@ go build -o kcompass ./cmd/kcompass
 
 ## Quick start
 
-Register a backend and list your clusters:
+If your network publishes a kcompass DNS TXT record (corporate DNS, Tailscale,
+or Netbird), kcompass works with **zero configuration**:
+
+```sh
+kcompass list
+kcompass connect my-cluster
+```
+
+Otherwise register a backend explicitly:
 
 ```sh
 # Local file
 kcompass init ~/my-clusters.yaml
 
-# Git repository
-kcompass init https://github.com/your-org/clusters
+# Git repository (https or ssh URL)
+kcompass init git@github.com:your-org/clusters
 
 # List all clusters
 kcompass list
 
-# Connect (merges kubeconfig and sets current context)
+# Connect (resolves credentials, merges kubeconfig, sets current context)
 kcompass connect my-cluster
 ```
+
+If you're an operator wanting other engineers to discover your registry without
+manual setup, see [`kcompass operator dns`](#auto-discovery) below.
 
 ---
 
@@ -66,7 +77,7 @@ backends:
     path: ~/.kcompass/clusters.yaml
 
   - type: git
-    url: https://github.com/your-org/clusters
+    url: git@github.com:your-org/clusters
     path: clusters/       # subdirectory to scan, default: repo root
     ref: main             # branch/tag/SHA, default: default branch
 
@@ -75,9 +86,12 @@ cache:
   path: ~/.kcompass/cache/
 
 discovery:
-  enabled: false          # omit this key (or set true) to enable auto-discovery
+  enabled: true           # default; set false to disable auto-discovery entirely
   timeout: 500ms          # per-probe network timeout, default 500ms
 ```
+
+Auto-discovery only runs when `backends:` is empty. Once any backend is configured,
+kcompass uses it exclusively and skips discovery probes.
 
 ---
 
@@ -99,10 +113,8 @@ backends:
 clusters:
   - name: dev
     description: Local dev cluster.
-    provider: generic
-    auth: static
-    metadata:
-      kubeconfig: |
+    kubeconfig:
+      inline: |
         apiVersion: v1
         kind: Config
         # ... full kubeconfig blob
@@ -147,14 +159,35 @@ kcompass init git@github.com:your-org/clusters
 
 ```yaml
 clusters:
+  # Per-user credentials minted by a command (Tailscale operator, gcloud, aws, ...)
+  - name: nonchord-staging
+    description: Staging cluster (Tailscale operator)
+    labels:
+      env: staging
+      team: platform
+    kubeconfig:
+      command: [tailscale, configure, kubeconfig, nonchord-staging]
+
   - name: production
-    description: Production GKE cluster.
-    provider: gke
-    auth: gcloud
-    metadata:
-      project: my-gcp-project
-      region: us-east1
-      cluster_id: production
+    description: Production GKE cluster
+    kubeconfig:
+      command:
+        - gcloud
+        - container
+        - clusters
+        - get-credentials
+        - production
+        - --region=us-east1
+        - --project=my-gcp-project
+
+  # Embedded kubeconfig (the same kubeconfig works for everyone)
+  - name: dev-laptop
+    description: Local k3s
+    kubeconfig:
+      inline: |
+        apiVersion: v1
+        kind: Config
+        # ... full kubeconfig blob
 ```
 
 Files without a top-level `clusters:` key are silently skipped, so a repo can contain other YAML without causing errors.
@@ -221,28 +254,52 @@ discovery:
 | `kcompass list` | List all clusters across configured backends |
 | `kcompass list --json` | JSON output for scripting |
 | `kcompass list --backend <name>` | Restrict to a specific backend |
-| `kcompass connect <name>` | Merge credentials and set current context |
+| `kcompass connect <name>` | Resolve credentials and set current context |
 | `kcompass connect <name> --no-switch` | Merge credentials without switching context |
-| `kcompass init <url-or-path>` | Register a backend |
+| `kcompass init <url-or-path>` | Register a backend (git or local, inferred from URL) |
 | `kcompass backends` | List configured backends and their status |
 | `kcompass operator dns <url>` | Print DNS TXT records for auto-discovery |
+| `kcompass operator dns <url> --verify` | Verify TXT records are published correctly |
+| `kcompass operator add` | Scaffold a cluster entry into an inventory file (interactive or flag-driven) |
+| `--verbose` / `-v` | Global flag: emit per-probe discovery diagnostics on stderr |
 
 ---
 
 ## ClusterRecord schema
 
-Every backend produces a list of `ClusterRecord` values:
+Every backend produces a list of `ClusterRecord` values. Each record needs a name and **exactly one** of `kubeconfig.inline` or `kubeconfig.command`:
 
 ```yaml
-name: my-cluster           # unique identifier
-description: "..."         # human-readable description
-provider: gke              # gke | eks | aks | generic
-auth: gcloud               # gcloud | aws | oidc | static
-metadata:                  # provider-specific fields
-  project: my-project
-  region: us-east1
-  cluster_id: my-cluster
+name: my-cluster              # required, unique identifier
+description: "..."            # optional, human-readable
+labels:                       # optional, free-form key/value tags
+  env: production
+  team: platform
+kubeconfig:
+  # Choose ONE of these two:
+
+  # 1. Inline — embed a kubeconfig that works for every user.
+  #    Use for OIDC + kubelogin, kube-oidc-proxy, service account tokens
+  #    behind Netbird, static dev clusters.
+  inline: |
+    apiVersion: v1
+    kind: Config
+    # ...
+
+  # 2. Command — argv kcompass runs to mint per-user credentials.
+  #    Use for tools that bind credentials to the running user's identity:
+  #    Tailscale operator, gcloud, aws, or any custom helper.
+  command: [tailscale, configure, kubeconfig, my-cluster]
 ```
+
+When `command` is used, kcompass runs the argv with `KUBECONFIG` set to a fresh
+temp file, captures the resulting kubeconfig, and merges it. This works uniformly
+for any tool that respects `KUBECONFIG` (gcloud, aws, tailscale, kubectl, helm).
+stdin/stdout/stderr are passed through so interactive prompts (e.g. `gcloud auth login`
+opening a browser) work normally.
+
+Inventory is validated at parse time, so a malformed record fails loudly during
+`kcompass list` rather than silently waiting for someone to try `connect`.
 
 ---
 
