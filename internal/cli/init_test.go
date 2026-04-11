@@ -12,9 +12,12 @@ import (
 	"github.com/nonchord/kcompass/pkg/config"
 )
 
+// runInit invokes kcompass init against cfgPath with --skip-verify, so
+// tests that care only about config-writing behavior don't do real network
+// or filesystem access under the hood.
 func runInit(t *testing.T, cfgPath string, args ...string) {
 	t.Helper()
-	_, err := executeWithConfig(t, cfgPath, append([]string{"init"}, args...)...)
+	_, err := executeWithConfig(t, cfgPath, append([]string{"init", "--skip-verify"}, args...)...)
 	require.NoError(t, err)
 }
 
@@ -79,7 +82,7 @@ func TestInitCreatesConfigDir(t *testing.T) {
 
 func TestInitOutput(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
-	out, err := executeWithConfig(t, cfgPath, "init", "https://example.com/clusters")
+	out, err := executeWithConfig(t, cfgPath, "init", "--skip-verify", "https://example.com/clusters")
 	require.NoError(t, err)
 	assert.Contains(t, out, "Backend registered")
 	assert.Contains(t, out, "https://example.com/clusters")

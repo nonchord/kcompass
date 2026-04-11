@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,6 +28,10 @@ func NewConnectCommand() *cobra.Command {
 			name := args[0]
 			rec, err := reg.Get(cmd.Context(), name)
 			if err != nil {
+				if errors.Is(err, backend.ErrAccessDenied) {
+					printAccessDenied(cmd)
+					return err
+				}
 				return fmt.Errorf("connect: %w", err)
 			}
 

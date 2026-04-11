@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -162,6 +163,9 @@ func (b *GitBackend) cloneRepo(ctx context.Context, cloneDir string) error {
 	}
 	if _, cloneErr := git.PlainCloneContext(ctx, cloneDir, false, opts); cloneErr != nil {
 		_ = os.RemoveAll(cloneDir)
+		if isAuthError(cloneErr) {
+			return fmt.Errorf("clone %s: %w: %w", b.url, ErrAccessDenied, cloneErr)
+		}
 		return fmt.Errorf("clone %s: %w", b.url, cloneErr)
 	}
 	writeFetchTimestamp(cloneDir)
@@ -188,10 +192,40 @@ func (b *GitBackend) fetchRepo(ctx context.Context, cloneDir string) error {
 	}
 	err = wt.PullContext(ctx, opts)
 	if err != nil && err != git.NoErrAlreadyUpToDate {
+		if isAuthError(err) {
+			return fmt.Errorf("pull %s: %w: %w", b.url, ErrAccessDenied, err)
+		}
 		return fmt.Errorf("pull %s: %w", b.url, err)
 	}
 	writeFetchTimestamp(cloneDir)
 	return nil
+}
+
+// isAuthError reports whether err indicates an authentication or authorization
+// failure that the user should be told about in friendly terms. It matches
+// go-git's transport sentinels and, as a fallback, substrings for ssh and
+// https auth failures that don't wrap those sentinels.
+func isAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, transport.ErrAuthenticationRequired) ||
+		errors.Is(err, transport.ErrAuthorizationFailed) ||
+		errors.Is(err, transport.ErrRepositoryNotFound) {
+		return true
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "authentication required"),
+		strings.Contains(msg, "authorization failed"),
+		strings.Contains(msg, "repository not found"),
+		strings.Contains(msg, "Repository not found"),
+		strings.Contains(msg, "unable to authenticate"),
+		strings.Contains(msg, "permission denied"),
+		strings.Contains(msg, "Permission denied"):
+		return true
+	}
+	return false
 }
 
 // authMethod selects the appropriate go-git auth from the URL and environment.

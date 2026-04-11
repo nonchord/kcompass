@@ -9,6 +9,12 @@ import (
 // ErrNotFound is returned when a cluster name doesn't exist in a backend.
 var ErrNotFound = errors.New("cluster not found")
 
+// ErrAccessDenied is returned by a backend when the underlying source rejects
+// the caller's credentials. Backends wrap their native auth errors with this
+// sentinel so the CLI can surface a consistent, friendly message regardless
+// of whether the underlying transport was SSH, HTTPS, or something else.
+var ErrAccessDenied = errors.New("access denied to cluster inventory")
+
 // ClusterRecord is the canonical representation of a Kubernetes cluster.
 type ClusterRecord struct {
 	Name        string            `yaml:"name"                  json:"name"`

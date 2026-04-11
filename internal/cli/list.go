@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"text/tabwriter"
 
@@ -29,6 +30,10 @@ func NewListCommand() *cobra.Command {
 
 			records, err := reg.List(cmd.Context())
 			if err != nil {
+				if errors.Is(err, backend.ErrAccessDenied) {
+					printAccessDenied(cmd)
+					return err
+				}
 				return fmt.Errorf("list: %w", err)
 			}
 
@@ -58,4 +63,19 @@ func registryFromContext(cmd *cobra.Command) (*backend.Registry, error) {
 		return nil, fmt.Errorf("no backend registry available; run `kcompass init <path>` to configure a backend")
 	}
 	return reg, nil
+}
+
+// printAccessDenied writes the friendly "you don't have access" message to
+// stderr and silences cobra's default error printing so the caller can return
+// the error with a non-zero exit without also emitting the raw wrapped form.
+// Used by list, connect, and init when they detect backend.ErrAccessDenied.
+func printAccessDenied(cmd *cobra.Command) {
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
+		"You don't have access to this cluster inventory.")
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
+		"Check that your SSH key or git token is configured for the backend,")
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
+		"and that you've been granted access to the repository.")
 }

@@ -98,7 +98,7 @@ func TestOperatorDNSHostnameDedup(t *testing.T) {
 
 func TestInitOutputHintsDNS(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
-	out, err := executeWithConfig(t, cfgPath, "init", "git@github.com:company/clusters")
+	out, err := executeWithConfig(t, cfgPath, "init", "--skip-verify", "git@github.com:company/clusters")
 	require.NoError(t, err)
 	assert.Contains(t, out, "Backend registered")
 	assert.Contains(t, out, "kcompass operator dns")
