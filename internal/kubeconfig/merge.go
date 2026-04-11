@@ -12,24 +12,31 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-// MergeStatic merges a static kubeconfig blob (from a ClusterRecord's metadata
-// "kubeconfig" field) into the kubeconfig at kubeconfigPath.  The file is written
-// atomically.  If switchContext is true the current-context is updated to the
-// merged cluster's context name (suffixed if a collision was resolved).
-func MergeStatic(kubeconfigPath string, newKubeconfigData []byte, switchContext bool) (string, error) {
+// MergeStatic merges a static kubeconfig blob (from a ClusterRecord's
+// "kubeconfig" field) into the kubeconfig at kubeconfigPath. The file is
+// written atomically. If switchContext is true, the current-context is
+// updated to the merged cluster's context name (suffixed if a collision
+// was resolved).
+//
+// The reused return value reports whether every cluster/user/context in
+// the incoming blob matched an existing entry with the same content, so
+// the merge was effectively a no-op. Callers (i.e. `kcompass connect`)
+// use this to distinguish "set up fresh credentials" from "already
+// connected" in their output.
+func MergeStatic(kubeconfigPath string, newKubeconfigData []byte, switchContext bool) (finalContext string, reused bool, err error) {
 	existing, err := loadOrEmpty(kubeconfigPath)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	incoming, err := clientcmd.Load(newKubeconfigData)
 	if err != nil {
-		return "", fmt.Errorf("kubeconfig: parse incoming: %w", err)
+		return "", false, fmt.Errorf("kubeconfig: parse incoming: %w", err)
 	}
 
-	finalContext, err := mergeInto(existing, incoming)
+	finalContext, reused, err = mergeInto(existing, incoming)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	if switchContext {
@@ -37,9 +44,9 @@ func MergeStatic(kubeconfigPath string, newKubeconfigData []byte, switchContext 
 	}
 
 	if err := writeAtomic(kubeconfigPath, existing); err != nil {
-		return "", err
+		return "", false, err
 	}
-	return finalContext, nil
+	return finalContext, reused, nil
 }
 
 // loadOrEmpty reads an existing kubeconfig file, or returns an empty Config if
@@ -71,13 +78,18 @@ func loadOrEmpty(path string) (*clientcmdapi.Config, error) {
 // `kubectl config set-context --current --namespace=foo` across repeated
 // connects. For clusters and users it's a small optimization — the content
 // was already equal so either behavior is semantically equivalent.
-func mergeInto(dst, src *clientcmdapi.Config) (string, error) {
+func mergeInto(dst, src *clientcmdapi.Config) (string, bool, error) {
 	// Determine the incoming context name (use the first one if multiple).
 	var srcContext string
 	for name := range src.Contexts {
 		srcContext = name
 		break
 	}
+
+	// anyWrite tracks whether ANY of the three passes below actually wrote
+	// to dst. When every entry found a content-equivalent slot and was
+	// reused, anyWrite stays false and the merge is reported as a no-op.
+	anyWrite := false
 
 	// Pass 1: merge clusters, tracking any renames so the context pass can
 	// rewrite its cluster ref when a collision forced a suffix.
@@ -88,6 +100,7 @@ func mergeInto(dst, src *clientcmdapi.Config) (string, error) {
 		})
 		if !reuse {
 			dst.Clusters[final] = cluster
+			anyWrite = true
 		}
 		clusterRename[name] = final
 	}
@@ -100,6 +113,7 @@ func mergeInto(dst, src *clientcmdapi.Config) (string, error) {
 		})
 		if !reuse {
 			dst.AuthInfos[final] = user
+			anyWrite = true
 		}
 		userRename[name] = final
 	}
@@ -127,10 +141,11 @@ func mergeInto(dst, src *clientcmdapi.Config) (string, error) {
 		}
 		if !reuse {
 			dst.Contexts[final] = &rewritten
+			anyWrite = true
 		}
 	}
 
-	return finalContext, nil
+	return finalContext, !anyWrite, nil
 }
 
 // resolveMergeName returns the name under which a new entry should be

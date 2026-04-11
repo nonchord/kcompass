@@ -43,7 +43,7 @@ func copyFixture(t *testing.T, fixture string) string {
 
 func TestMergeIntoEmpty(t *testing.T) {
 	path := copyFixture(t, "kubeconfig_empty.yaml")
-	ctx, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	ctx, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
 	assert.Equal(t, "dev-cluster", ctx)
 
@@ -55,7 +55,7 @@ func TestMergeIntoEmpty(t *testing.T) {
 
 func TestMergeNoConflict(t *testing.T) {
 	path := copyFixture(t, "kubeconfig_existing.yaml")
-	ctx, err := kubeconfig.MergeStatic(path, incomingKubeconfig, false)
+	ctx, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, false)
 	require.NoError(t, err)
 	assert.Equal(t, "dev-cluster", ctx)
 
@@ -68,7 +68,7 @@ func TestMergeNoConflict(t *testing.T) {
 
 func TestMergeConflict(t *testing.T) {
 	path := copyFixture(t, "kubeconfig_conflict.yaml")
-	ctx, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	ctx, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
 	assert.Equal(t, "dev-cluster-1", ctx)
 
@@ -81,7 +81,7 @@ func TestMergeConflict(t *testing.T) {
 
 func TestMergeSwitchContext(t *testing.T) {
 	path := copyFixture(t, "kubeconfig_existing.yaml")
-	_, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	_, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
 	cfg, err := kcmd.LoadFromFile(path)
 	require.NoError(t, err)
@@ -90,7 +90,7 @@ func TestMergeSwitchContext(t *testing.T) {
 
 func TestMergeNoSwitch(t *testing.T) {
 	path := copyFixture(t, "kubeconfig_existing.yaml")
-	_, err := kubeconfig.MergeStatic(path, incomingKubeconfig, false)
+	_, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, false)
 	require.NoError(t, err)
 	cfg, err := kcmd.LoadFromFile(path)
 	require.NoError(t, err)
@@ -99,7 +99,7 @@ func TestMergeNoSwitch(t *testing.T) {
 
 func TestMergeNonExistentFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "subdir", "kubeconfig")
-	ctx, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	ctx, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
 	assert.Equal(t, "dev-cluster", ctx)
 	_, err = os.Stat(path)
@@ -113,7 +113,7 @@ func TestMergeAtomic(t *testing.T) {
 	require.NoError(t, os.Chmod(dir, 0o500))
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
-	_, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	_, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.Error(t, err)
 	_, statErr := os.Stat(path)
 	assert.True(t, os.IsNotExist(statErr), "original must not be modified on failure")
@@ -128,11 +128,11 @@ func TestMergeAtomic(t *testing.T) {
 func TestMergeIdempotent(t *testing.T) {
 	path := copyFixture(t, "kubeconfig_empty.yaml")
 
-	_, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	_, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
-	_, err = kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	_, _, err = kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
-	_, err = kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	_, _, err = kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
 
 	cfg, err := kcmd.LoadFromFile(path)
@@ -155,7 +155,7 @@ func TestMergeIdempotent(t *testing.T) {
 func TestMergeConflictRewritesContextRefs(t *testing.T) {
 	path := copyFixture(t, "kubeconfig_conflict.yaml")
 
-	_, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	_, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
 
 	cfg, err := kcmd.LoadFromFile(path)
@@ -190,7 +190,7 @@ func TestMergeContextNamespacePreservedOnReconnect(t *testing.T) {
 	path := copyFixture(t, "kubeconfig_empty.yaml")
 
 	// First connect: merge an incoming kubeconfig with no namespace set.
-	_, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	_, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
 
 	// Simulate `kubectl config set-context --current --namespace=team-a`.
@@ -200,7 +200,7 @@ func TestMergeContextNamespacePreservedOnReconnect(t *testing.T) {
 	require.NoError(t, kcmd.WriteToFile(*cfg, path))
 
 	// Second connect: merge the same incoming blob again.
-	_, err = kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	_, _, err = kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
 
 	// The user's namespace choice must still be there, and no duplicate
@@ -263,13 +263,13 @@ users:
   user:
     token: flat-token
 `)
-	_, err := kubeconfig.MergeStatic(path, blob, true)
+	_, _, err := kubeconfig.MergeStatic(path, blob, true)
 	require.NoError(t, err)
 
 	// Re-merge 50 times. If json.Marshal drifts, even once, the
 	// idempotency check breaks and we get a -1 suffix somewhere.
 	for i := 0; i < 50; i++ {
-		_, err := kubeconfig.MergeStatic(path, blob, true)
+		_, _, err := kubeconfig.MergeStatic(path, blob, true)
 		require.NoError(t, err)
 	}
 
@@ -288,9 +288,9 @@ users:
 func TestMergeSameNameDifferentContentStillSuffixes(t *testing.T) {
 	path := copyFixture(t, "kubeconfig_conflict.yaml")
 
-	_, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	_, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
-	_, err = kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	_, _, err = kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
 
 	cfg, err := kcmd.LoadFromFile(path)
