@@ -12,10 +12,25 @@ import (
 type NetworkDomains struct {
 	// Tailscale is the MagicDNS suffix (e.g. "your-tailnet.ts.net").
 	Tailscale string
+	// TailscaleSearchPaths are the DNS search domains that Tailscale itself
+	// is pushing to the OS resolver. May include the MagicDNS suffix and
+	// any extra paths configured via the admin console's DNS settings.
+	// Populated from `tailscale dns status --json`.
+	TailscaleSearchPaths []string
 	// Netbird is the management server domain (e.g. "app.netbird.io").
 	Netbird string
-	// DNS holds the search domains from /etc/resolv.conf.
+	// DNS holds the search domains from /etc/resolv.conf — a flat list with
+	// no provenance, so entries here may have been injected by Tailscale,
+	// Netbird, DHCP, or manual configuration. Use TailscaleSearchPaths /
+	// Netbird to attribute a given entry to a specific source.
 	DNS []string
+}
+
+// tailscaleDNSStatusJSON is the subset of `tailscale dns status --json` we need
+// to attribute search domains to Tailscale. The command is marked preliminary
+// upstream; we parse best-effort and fall back to an empty list on any error.
+type tailscaleDNSStatusJSON struct {
+	SearchDomains []string `json:"SearchDomains"`
 }
 
 // DetectNetworkDomains queries Tailscale, Netbird, and resolv.conf to discover
@@ -28,6 +43,19 @@ func DetectNetworkDomains(ctx context.Context) NetworkDomains {
 		var st tailscaleStatusJSON
 		if json.Unmarshal(data, &st) == nil {
 			nd.Tailscale = st.MagicDNSSuffix
+		}
+	}
+
+	// Tailscale pushed search paths: only meaningful when Tailscale is running.
+	// On older tailscale versions without `tailscale dns status --json`, the
+	// command fails and TailscaleSearchPaths stays nil — the template will
+	// then fall back to just the MagicDNS suffix.
+	if nd.Tailscale != "" {
+		if data, err := exec.CommandContext(ctx, "tailscale", "dns", "status", "--json").Output(); err == nil {
+			var st tailscaleDNSStatusJSON
+			if json.Unmarshal(data, &st) == nil {
+				nd.TailscaleSearchPaths = st.SearchDomains
+			}
 		}
 	}
 

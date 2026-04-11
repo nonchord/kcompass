@@ -47,6 +47,57 @@ func NewOperatorDNSCommand() *cobra.Command {
 	return cmd
 }
 
+// corporateDNSDomains returns the subset of domains.DNS that is not claimed by
+// a more specific source (Tailscale or Netbird). When Tailscale pushes search
+// paths to the OS resolver (visible via `tailscale dns status --json`), those
+// entries appear in /etc/resolv.conf with no provenance; attributing them back
+// to Tailscale reads cleaner and avoids the same hostname showing up twice in
+// the output.
+func corporateDNSDomains(domains discovery.NetworkDomains) []string {
+	claimed := map[string]bool{}
+	if domains.Tailscale != "" {
+		claimed[domains.Tailscale] = true
+	}
+	for _, d := range domains.TailscaleSearchPaths {
+		claimed[d] = true
+	}
+	if domains.Netbird != "" {
+		claimed[domains.Netbird] = true
+	}
+	var out []string
+	for _, d := range domains.DNS {
+		if claimed[d] {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// tailscaleHostDomains returns the list of domains that should be printed
+// under the "Tailscale" row — the MagicDNS suffix plus any extra search
+// paths Tailscale is pushing, deduplicated and stable-ordered (MagicDNS
+// suffix first when it's in the set).
+func tailscaleHostDomains(domains discovery.NetworkDomains) []string {
+	if domains.Tailscale == "" && len(domains.TailscaleSearchPaths) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	add := func(d string) {
+		if d == "" || seen[d] {
+			return
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	add(domains.Tailscale)
+	for _, d := range domains.TailscaleSearchPaths {
+		add(d)
+	}
+	return out
+}
+
 func printDNSRecords(out io.Writer, backendURL string, domains discovery.NetworkDomains) {
 	txtValue := fmt.Sprintf(`"v=kc1; backend=%s"`, backendURL)
 
@@ -62,9 +113,10 @@ func printDNSRecords(out io.Writer, backendURL string, domains discovery.Network
 	p("  Network        Hostname")
 	p("  ─────────────────────────────────────────────────────────────────")
 
-	if len(domains.DNS) > 0 {
-		pf("  Corporate DNS  kcompass.%s\n", domains.DNS[0])
-		for _, d := range domains.DNS[1:] {
+	corpDomains := corporateDNSDomains(domains)
+	if len(corpDomains) > 0 {
+		pf("  Corporate DNS  kcompass.%s\n", corpDomains[0])
+		for _, d := range corpDomains[1:] {
 			pf("                 kcompass.%s\n", d)
 		}
 	} else {
@@ -72,8 +124,11 @@ func printDNSRecords(out io.Writer, backendURL string, domains discovery.Network
 		p("                 e.g. kcompass.internal.company.com")
 	}
 
-	if domains.Tailscale != "" {
-		pf("  Tailscale      kcompass.%s\n", domains.Tailscale)
+	if tsDomains := tailscaleHostDomains(domains); len(tsDomains) > 0 {
+		pf("  Tailscale      kcompass.%s\n", tsDomains[0])
+		for _, d := range tsDomains[1:] {
+			pf("                 kcompass.%s\n", d)
+		}
 	} else {
 		p("  Tailscale      kcompass.<tailnet-magic-dns-suffix>")
 		p("                 e.g. kcompass.your-tailnet.ts.net")
@@ -89,8 +144,8 @@ func printDNSRecords(out io.Writer, backendURL string, domains discovery.Network
 	p("")
 	p("Full example (corporate DNS, replace search domain with yours):")
 	exampleDomain := "internal.company.com"
-	if len(domains.DNS) > 0 {
-		exampleDomain = domains.DNS[0]
+	if len(corpDomains) > 0 {
+		exampleDomain = corpDomains[0]
 	}
 	pf("  kcompass.%s. 300 IN TXT %s\n", exampleDomain, txtValue)
 }
@@ -132,14 +187,18 @@ func verifyDNSRecords(
 			add("Explicit", h)
 		}
 	} else {
-		for _, d := range domains.DNS {
-			add("Corporate DNS", "kcompass."+d)
-		}
-		if domains.Tailscale != "" {
-			add("Tailscale", "kcompass."+domains.Tailscale)
+		// Attribute Tailscale-pushed search paths to Tailscale, not Corporate
+		// DNS, even though they're present in /etc/resolv.conf. Order matters:
+		// adding Tailscale first means any subsequent Corporate DNS entry with
+		// the same hostname is silently skipped by the dedup in `add`.
+		for _, d := range tailscaleHostDomains(domains) {
+			add("Tailscale", "kcompass."+d)
 		}
 		if domains.Netbird != "" {
 			add("Netbird", "kcompass."+domains.Netbird)
+		}
+		for _, d := range corporateDNSDomains(domains) {
+			add("Corporate DNS", "kcompass."+d)
 		}
 	}
 
