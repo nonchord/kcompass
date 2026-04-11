@@ -44,26 +44,70 @@ Context is set to cluster1.
 Flags:
 - `--no-switch` — merge credentials but do not change the current context
 
-### `kcompass init <url>`
+### `kcompass init <url-or-path>`
 
-Explicitly registers a backend by URL. Writes to `~/.kcompass/config.yaml`.
+Explicitly registers a backend by URL or local path. Writes to `~/.kcompass/config.yaml`.
+The backend type is inferred from the URL: `https://`, `http://`, `git@`, `git://`, and
+`ssh://` produce a git backend; anything else is treated as a local file path.
 
 ```
-$ kcompass init https://clusters.internal.company.com
-Backend registered: https://clusters.internal.company.com
+$ kcompass init git@github.com:company/clusters
+Backend registered: git@github.com:company/clusters
+
+To advertise via DNS auto-discovery: kcompass operator dns git@github.com:company/clusters
 ```
 
 ### `kcompass backends`
 
-Lists configured backends and their status (reachable, cached, error).
+Lists configured backends and their status.
 
 ```
 $ kcompass backends
-TYPE     SOURCE                                  STATUS
-gke      project=my-project region=us-east1      ok
-git      https://github.com/company/clusters     ok
-local    ~/.kcompass/local.yaml                  ok
+TYPE   SOURCE                                STATUS
+git    git@github.com:company/clusters       ok
+local  ~/.kcompass/local.yaml                ok
 ```
+
+### `kcompass operator dns <url>`
+
+Prints the DNS TXT records that operators publish to advertise a backend via
+auto-discovery. The same `v=kc1; backend=<url>` value is used at three different
+hostnames depending on the network (corporate DNS search domain, Tailscale
+MagicDNS suffix, Netbird management domain). When run on a machine that is already
+attached to those networks, real detected hostnames are shown instead of placeholders.
+
+```
+$ kcompass operator dns git@github.com:company/clusters
+$ kcompass operator dns git@github.com:company/clusters --verify
+```
+
+The `--verify` flag performs live TXT lookups against each detected domain and
+reports `OK`, `mismatch`, or `not found` per hostname.
+
+### `kcompass operator add`
+
+Scaffolds a single cluster record into a YAML inventory. All required values can
+be supplied via flags (suitable for CI/scripts) or interactively when stdin is a
+terminal. Two credential modes are supported, mirroring `KubeconfigSpec` (see
+[Core Concepts](#core-concepts) below):
+
+```
+$ kcompass operator add \
+    --name nonchord-staging \
+    --description "Staging cluster (Tailscale operator)" \
+    --command "tailscale configure kubeconfig nonchord-staging" \
+    --output clusters.yaml
+
+$ kcompass operator add \
+    --name dev-laptop \
+    --kubeconfig ~/.kube/dev-laptop-config \
+    --output clusters.yaml
+```
+
+### Global flags
+
+- `--config <path>` — override the default config file location
+- `--verbose` / `-v` — emit per-probe discovery diagnostics on stderr
 
 ---
 
@@ -146,48 +190,41 @@ The registry layer (not individual backends) handles:
 
 ---
 
-## Backends — Implementation Priority
+## Backends
 
-### 1. Cloud Provider (GKE / EKS)
+kcompass ships with two backends. Both produce the same `[]ClusterRecord`
+output and use identical YAML file formats; they differ only in how the file is
+sourced.
 
-Queries cloud provider APIs directly using ambient credentials (`gcloud`, `aws` CLIs or
-their underlying credential chains). Requires no registry configuration.
+There is intentionally no cloud-provider backend (GKE/EKS/AKS). The original
+plan included one, but with the `KubeconfigSpec` model a GKE cluster is just a
+record whose `kubeconfig.command` is `[gcloud, container, clusters, get-credentials, ...]`.
+The job a runtime cloud backend would do — sparing operators from authoring those
+records — is instead served at inventory-generation time (e.g. via `kcompass operator add`,
+or a Terraform output, or a one-shot script that walks `gcloud container clusters list`).
+Cluster inventories change quarterly, not per-second; a fast local read with manual
+refresh is the right tradeoff over an API call on every `kcompass list`.
 
-**GKE:** Uses the GKE API (`container.googleapis.com`) to list clusters across a project.
-Project is inferred from `gcloud config get-value project` if not specified.
-
-**EKS:** Uses the EKS API to list clusters in a region. Region inferred from AWS config.
-
-This is the only backend that can operate with zero `kcompass` configuration. It should be
-attempted automatically if no backends are configured and cloud credentials are detected.
-
-Config example:
-```yaml
-backends:
-  - type: gke
-    project: my-gcp-project     # optional, inferred if omitted
-    region: us-east1            # optional, queries all regions if omitted
-  - type: eks
-    region: us-east-1
-```
-
-### 2. Git
+### 1. Git
 
 Clones or fetches a Git repository and reads cluster YAML files from a path within it.
-Each file (or a single `clusters.yaml` listing) is parsed into `[]ClusterRecord`.
+Each `.yaml` file with a top-level `clusters:` key is parsed into `[]ClusterRecord`;
+files without that key are silently skipped, so a repo can mix cluster inventory with
+other YAML.
 
 Supports:
-- HTTPS with token auth (`GIT_TOKEN` env var or keychain)
-- SSH with default key
+- HTTPS with token auth (`GIT_TOKEN` env var)
+- SSH with default key (via SSH agent, then `~/.ssh/id_*`)
 - Public repos (no auth)
 
-The local clone is cached at `~/.kcompass/cache/git/<hash-of-url>/` and refreshed on TTL.
+The local clone is cached at `~/.kcompass/cache/git/<hash-of-url>/` and refreshed
+on a configurable TTL (default: always fetch).
 
 Config example:
 ```yaml
 backends:
   - type: git
-    url: https://github.com/company/clusters
+    url: git@github.com:company/clusters
     path: clusters/             # subdirectory within repo, default: repo root
     ref: main                   # branch/tag/sha, default: default branch
 ```
@@ -217,38 +254,10 @@ clusters:
         # ...
 ```
 
-### 3. HTTP / REST API
+### 2. Local YAML
 
-Fetches cluster records from an HTTP endpoint. Expects a JSON response:
-
-```json
-{
-  "clusters": [
-    {
-      "name": "cluster1",
-      "description": "The production cluster.",
-      "provider": "gke",
-      "auth": "gcloud",
-      "metadata": { "project": "my-project", "region": "us-east1", "cluster_id": "cluster1" }
-    }
-  ]
-}
-```
-
-Supports bearer token auth (`Authorization: Bearer <token>`) via env var or config.
-
-Config example:
-```yaml
-backends:
-  - type: http
-    url: https://clusters.internal.company.com/api/clusters
-    token_env: KCLUSTER_TOKEN   # env var name, optional
-```
-
-### 4. Local YAML
-
-Reads a local file. Useful for personal dev clusters, overrides, or airgapped environments.
-Uses the same file format as the Git backend.
+Reads a single local file. Useful for personal dev clusters, overrides, or
+air-gapped environments. Uses the same file format as the Git backend.
 
 Config example:
 ```yaml
@@ -259,41 +268,54 @@ backends:
 
 ---
 
-## Auto-Discovery Sequence
+## Auto-Discovery
 
-When no backends are configured, kcompass attempts discovery in this order. All network
-attempts are parallel with a 500ms timeout. Results are cached to avoid repeated lookups.
+When no backends are configured, kcompass runs three probes in parallel
+(500ms timeout, configurable). All three use **DNS TXT records** with the
+same value format and differ only in which hostname they query:
 
 ```
-1. Detect Tailscale daemon (tailscaled socket or `tailscale status`)
-      → SRV lookup: _kcompass._tcp.<tailnet-domain>
-      → If found: use returned host as HTTP backend URL
-
-2. Detect Netbird daemon (netbird service or WireGuard interface wt0)
-      → SRV lookup: _kcompass._tcp.<netbird-domain>
-      → If found: use returned host as HTTP backend URL
-
-3. Read DNS search domains from /etc/resolv.conf (or OS resolver on macOS)
-      → For each domain: TXT lookup kcompass.<domain>
-      → If TXT value begins with "v=kc1": parse and use as backend URL
-
-4. Detect gcloud credentials → attempt GKE backend (see above)
-
-5. Detect AWS credentials → attempt EKS backend (see above)
-
-6. All failed → print:
-   No cluster registry found. Run `kcompass init <url>` to configure a backend,
-   or connect to your company VPN/Tailscale network and try again.
+"v=kc1; backend=<git-or-local-url>"
 ```
 
-Daemon detection details:
-- **Tailscale:** check for socket at `/var/run/tailscale/tailscaled.sock` or run `tailscale status --json`
-- **Netbird:** check for WireGuard interface `wt0` via netlink, or `netbird status`
+### Probes
 
-DNS TXT record format (for step 3):
+| # | Probe | Hostname queried | Detection prerequisite |
+|---|---|---|---|
+| 1 | **Tailscale** | `kcompass.<tailnet-magic-dns-suffix>` | tailscaled socket present, `tailscale status --json` succeeds, `MagicDNSSuffix` non-empty |
+| 2 | **Netbird** | `kcompass.<management-server-domain>` | `wt0` WireGuard interface present, `netbird status --json` succeeds |
+| 3 | **DNS search domains** | `kcompass.<domain>` for each domain in `/etc/resolv.conf` | none (always runs) |
+
+The first probe to return a valid record wins. Each found backend is named with
+its discovery provenance (`tailscale:<url>`, `netbird:<url>`, `dns:<domain>:<url>`)
+so `kcompass list --verbose` shows where a cluster came from.
+
+If all probes return no records, kcompass prints:
 ```
-kcompass.internal.company.com TXT "v=kc1; backend=https://clusters.internal.company.com"
+No cluster registry found. Run `kcompass init <url>` to configure a backend,
+or connect to your company VPN/Tailscale network and try again.
 ```
+
+### Why DNS TXT for all three
+
+Originally we considered SRV records (which point at host:port) for the
+Tailscale and Netbird probes. SRV is too restrictive: it can only express
+HTTP backends. TXT records carry an arbitrary URL, so a single mechanism
+covers git over SSH, git over HTTPS, and (in principle) anything else we
+add later. Operators have one record format to learn and one
+[`kcompass operator dns`](#kcompass-operator-dns-url) command to verify.
+
+### Publishing records (for operators)
+
+```
+kcompass.internal.company.com.   300 IN TXT "v=kc1; backend=git@github.com:company/clusters"
+kcompass.your-tailnet.ts.net.    300 IN TXT "v=kc1; backend=git@github.com:company/clusters"
+kcompass.app.netbird.io.         300 IN TXT "v=kc1; backend=git@github.com:company/clusters"
+```
+
+The `kcompass operator dns <url>` command prints the exact records to add. Run
+it on a machine that's already attached to the relevant network and it will
+substitute in the real domain names.
 
 ---
 
@@ -303,22 +325,23 @@ Location: `~/.kcompass/config.yaml`
 
 ```yaml
 backends:
-  - type: gke
-    project: my-project
   - type: git
-    url: https://github.com/company/clusters
+    url: git@github.com:company/clusters
     path: clusters/
   - type: local
     path: ~/.kcompass/local.yaml
 
 cache:
-  ttl: 5m
+  ttl: 5m                 # how long the registry caches the merged cluster list
   path: ~/.kcompass/cache/
 
 discovery:
-  enabled: true       # whether to attempt auto-discovery when no backends configured
-  timeout: 500ms      # per-probe timeout for network discovery
+  enabled: true           # default; set to false to disable auto-discovery entirely
+  timeout: 500ms          # per-probe timeout for network discovery
 ```
+
+Discovery only runs when no `backends:` are configured. Once any backend is
+present, kcompass uses it exclusively and skips probing.
 
 ---
 
@@ -328,5 +351,7 @@ discovery:
 - Managing RBAC or cluster permissions
 - Any UI beyond the CLI
 - Windows support in v1 (Linux and macOS only)
-- Storing credentials — kcompass delegates entirely to the auth method (gcloud, aws, OIDC)
-  and writes only what those tools produce into kubeconfig
+- Storing credentials — kcompass either embeds a kubeconfig the operator authored
+  or runs an operator-supplied command that writes to `KUBECONFIG`. It never holds
+  long-lived credentials of its own.
+- Runtime cloud-provider backends (GKE/EKS/AKS) — superseded by inventory generation
