@@ -24,7 +24,10 @@ func NewOperatorCommand() *cobra.Command {
 
 // NewOperatorDNSCommand creates the `kcompass operator dns <url>` command.
 func NewOperatorDNSCommand() *cobra.Command {
-	var verify bool
+	var (
+		verify    bool
+		hostnames []string
+	)
 	cmd := &cobra.Command{
 		Use:   "dns <url>",
 		Short: "Print DNS TXT records to advertise a backend via auto-discovery",
@@ -32,13 +35,15 @@ func NewOperatorDNSCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domains := discovery.DetectNetworkDomains(cmd.Context())
 			printDNSRecords(cmd.OutOrStdout(), args[0], domains)
-			if verify {
-				verifyDNSRecords(cmd.Context(), cmd.OutOrStdout(), args[0], domains)
+			if verify || len(hostnames) > 0 {
+				verifyDNSRecords(cmd.Context(), cmd.OutOrStdout(), args[0], domains, hostnames)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&verify, "verify", false, "verify that TXT records are published and match")
+	cmd.Flags().StringSliceVar(&hostnames, "hostname", nil,
+		"verify these FQDNs instead of the auto-detected ones (repeatable, implies --verify)")
 	return cmd
 }
 
@@ -90,9 +95,18 @@ func printDNSRecords(out io.Writer, backendURL string, domains discovery.Network
 	pf("  kcompass.%s. 300 IN TXT %s\n", exampleDomain, txtValue)
 }
 
-// verifyDNSRecords performs live TXT lookups for each detected domain and
-// prints whether the expected kcompass record is present and correct.
-func verifyDNSRecords(ctx context.Context, out io.Writer, backendURL string, domains discovery.NetworkDomains) {
+// verifyDNSRecords performs live TXT lookups and prints whether the expected
+// kcompass record is present and correct. When explicitHostnames is non-empty,
+// only those FQDNs are checked (and the detected domain list is ignored);
+// otherwise the detected domain list is used, with duplicates removed so the
+// same hostname is never queried twice when multiple probes happen to agree.
+func verifyDNSRecords(
+	ctx context.Context,
+	out io.Writer,
+	backendURL string,
+	domains discovery.NetworkDomains,
+	explicitHostnames []string,
+) {
 	p := func(s string) { _, _ = fmt.Fprintln(out, s) }
 	pf := func(format string, a ...interface{}) { _, _ = fmt.Fprintf(out, format, a...) }
 
@@ -101,15 +115,32 @@ func verifyDNSRecords(ctx context.Context, out io.Writer, backendURL string, dom
 		hostname string
 	}
 
-	var checks []entry
-	for _, d := range domains.DNS {
-		checks = append(checks, entry{"Corporate DNS", "kcompass." + d})
+	var (
+		checks []entry
+		seen   = map[string]bool{}
+	)
+	add := func(label, hostname string) {
+		if seen[hostname] {
+			return
+		}
+		seen[hostname] = true
+		checks = append(checks, entry{label, hostname})
 	}
-	if domains.Tailscale != "" {
-		checks = append(checks, entry{"Tailscale", "kcompass." + domains.Tailscale})
-	}
-	if domains.Netbird != "" {
-		checks = append(checks, entry{"Netbird", "kcompass." + domains.Netbird})
+
+	if len(explicitHostnames) > 0 {
+		for _, h := range explicitHostnames {
+			add("Explicit", h)
+		}
+	} else {
+		for _, d := range domains.DNS {
+			add("Corporate DNS", "kcompass."+d)
+		}
+		if domains.Tailscale != "" {
+			add("Tailscale", "kcompass."+domains.Tailscale)
+		}
+		if domains.Netbird != "" {
+			add("Netbird", "kcompass."+domains.Netbird)
+		}
 	}
 
 	p("")
@@ -117,7 +148,8 @@ func verifyDNSRecords(ctx context.Context, out io.Writer, backendURL string, dom
 
 	if len(checks) == 0 {
 		p("")
-		p("  No network domains detected — connect to a managed network and try again.")
+		p("  No network domains detected — connect to a managed network and try again,")
+		p("  or pass --hostname <fqdn> to verify a specific record.")
 		return
 	}
 
