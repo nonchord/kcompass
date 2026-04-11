@@ -2,6 +2,7 @@
 package kubeconfig
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,10 +55,14 @@ func loadOrEmpty(path string) (*clientcmdapi.Config, error) {
 	return cfg, nil
 }
 
-// mergeInto copies all clusters, users, and contexts from src into dst,
-// renaming any collisions with a -1, -2, ... suffix.  Returns the final
-// context name that the caller should switch to (the context from src,
-// possibly renamed).
+// mergeInto copies all clusters, users, and contexts from src into dst.
+// Collision resolution is content-aware: if src has an entry with the same
+// name AND the same content as one already in dst, the existing slot is
+// reused (so re-running `kcompass connect` against the same cluster is a
+// no-op, not a source of -1, -2, … duplicates). If the content differs, a
+// numeric suffix is appended, and context cluster/user refs are rewritten
+// to point at the renamed targets. Returns the final context name the
+// caller should switch to.
 func mergeInto(dst, src *clientcmdapi.Config) (string, error) {
 	// Determine the incoming context name (use the first one if multiple).
 	var srcContext string
@@ -66,37 +71,136 @@ func mergeInto(dst, src *clientcmdapi.Config) (string, error) {
 		break
 	}
 
+	// Pass 1: merge clusters, tracking any renames so the context pass can
+	// rewrite its cluster ref when a collision forced a suffix.
+	clusterRename := map[string]string{}
 	for name, cluster := range src.Clusters {
-		dst.Clusters[uniqueName(dst.Clusters, name)] = cluster
-	}
-	for name, user := range src.AuthInfos {
-		dst.AuthInfos[uniqueName(dst.AuthInfos, name)] = user
+		final := resolveMergeName(dst.Clusters, name, func(existing *clientcmdapi.Cluster) bool {
+			return equalCluster(existing, cluster)
+		})
+		dst.Clusters[final] = cluster
+		clusterRename[name] = final
 	}
 
+	// Pass 2: merge authinfos with the same rename-tracking.
+	userRename := map[string]string{}
+	for name, user := range src.AuthInfos {
+		final := resolveMergeName(dst.AuthInfos, name, func(existing *clientcmdapi.AuthInfo) bool {
+			return equalAuthInfo(existing, user)
+		})
+		dst.AuthInfos[final] = user
+		userRename[name] = final
+	}
+
+	// Pass 3: merge contexts. Each context may reference a cluster/user by
+	// name; if the cluster/user got renamed in passes 1 or 2, rewrite the
+	// ref on a copy so the stored context points at the right targets.
+	// Then compare the rewritten value against the dst slot for content
+	// equality, so re-running connect is idempotent end-to-end.
 	finalContext := srcContext
 	for name, ctx := range src.Contexts {
-		final := uniqueName(dst.Contexts, name)
+		rewritten := *ctx // copy the struct so we don't mutate src
+		if renamed, ok := clusterRename[ctx.Cluster]; ok {
+			rewritten.Cluster = renamed
+		}
+		if renamed, ok := userRename[ctx.AuthInfo]; ok {
+			rewritten.AuthInfo = renamed
+		}
+		final := resolveMergeName(dst.Contexts, name, func(existing *clientcmdapi.Context) bool {
+			return equalContext(existing, &rewritten)
+		})
 		if name == srcContext {
 			finalContext = final
 		}
-		dst.Contexts[final] = ctx
+		dst.Contexts[final] = &rewritten
 	}
 
 	return finalContext, nil
 }
 
-// uniqueName returns name if it is not a key in m, otherwise appends -1, -2, …
-// until it finds one that is free.
-func uniqueName[V any](m map[string]V, name string) string {
-	if _, exists := m[name]; !exists {
+// resolveMergeName returns the name under which a new entry should be
+// stored in m. Three outcomes:
+//
+//  1. m has no entry at name → returns name (new slot)
+//  2. m has an entry at name and equals(existing) reports true → returns
+//     name (reuse the existing slot, idempotent)
+//  3. m has an entry at name with different content → tries name-1, name-2,
+//     … until it finds either a free slot OR one that equals reports true
+//
+// Case (2) is what makes `kcompass connect` idempotent when re-run against
+// the same cluster: the second call reuses the slot the first call wrote,
+// instead of producing a fresh name-1 suffix every time.
+func resolveMergeName[V any](m map[string]V, name string, equals func(V) bool) string {
+	if existing, exists := m[name]; !exists || equals(existing) {
 		return name
 	}
 	for i := 1; ; i++ {
 		candidate := fmt.Sprintf("%s-%d", name, i)
-		if _, exists := m[candidate]; !exists {
+		existing, exists := m[candidate]
+		if !exists {
+			return candidate
+		}
+		if equals(existing) {
 			return candidate
 		}
 	}
+}
+
+// equalCluster, equalAuthInfo, and equalContext compare two kubeconfig
+// entries by their on-disk representation: each entry is wrapped in a
+// single-entry Config and written through clientcmd.Write, which is the
+// same serializer used by the persisted kubeconfig. Two entries are equal
+// iff their serialized bytes match — the definition of "equal" that
+// matches what the user would actually see in their kubeconfig file.
+//
+// clientcmd.Write explicitly omits the LocationOfOrigin bookkeeping field
+// (which differs between a freshly-loaded incoming blob and a persisted
+// entry), so this comparison naturally ignores it without needing a manual
+// zero-out pass.
+func equalCluster(a, b *clientcmdapi.Cluster) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return bytes.Equal(marshalOne("c", a, nil, nil), marshalOne("c", b, nil, nil))
+}
+
+func equalAuthInfo(a, b *clientcmdapi.AuthInfo) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return bytes.Equal(marshalOne("", nil, a, nil), marshalOne("", nil, b, nil))
+}
+
+func equalContext(a, b *clientcmdapi.Context) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return bytes.Equal(marshalOne("", nil, nil, a), marshalOne("", nil, nil, b))
+}
+
+// marshalOne serializes a single kubeconfig entry (exactly one of c, u, or
+// ctx must be non-nil) through clientcmd.Write by wrapping it in a minimal
+// Config. The returned bytes are canonical: LocationOfOrigin is omitted,
+// field order is stable, and anything clientcmd considers structurally
+// identical will round-trip to the same bytes.
+func marshalOne(key string, c *clientcmdapi.Cluster, u *clientcmdapi.AuthInfo, ctx *clientcmdapi.Context) []byte {
+	cfg := *clientcmdapi.NewConfig()
+	if key == "" {
+		key = "k"
+	}
+	switch {
+	case c != nil:
+		cfg.Clusters[key] = c
+	case u != nil:
+		cfg.AuthInfos[key] = u
+	case ctx != nil:
+		cfg.Contexts[key] = ctx
+	}
+	data, err := clientcmd.Write(cfg)
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 // writeAtomic serialises cfg to a temp file in the same directory as path,
