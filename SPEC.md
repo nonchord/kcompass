@@ -76,30 +76,47 @@ Every backend produces a list of `ClusterRecord` values. This is the canonical s
 ```go
 type ClusterRecord struct {
     Name        string            `yaml:"name"`
-    Description string            `yaml:"description"`
-    Provider    string            `yaml:"provider"`    // gke, eks, aks, generic
-    Auth        string            `yaml:"auth"`        // gcloud, aws, oidc, static
-    Metadata    map[string]string `yaml:"metadata"`    // provider-specific fields
+    Description string            `yaml:"description,omitempty"`
+    Labels      map[string]string `yaml:"labels,omitempty"`
+    Kubeconfig  KubeconfigSpec    `yaml:"kubeconfig"`
+}
+
+type KubeconfigSpec struct {
+    // Inline is a complete kubeconfig YAML blob shipped with the record.
+    Inline  string   `yaml:"inline,omitempty"`
+    // Command is an argv vector kcompass runs to mint a per-user kubeconfig.
+    Command []string `yaml:"command,omitempty"`
 }
 ```
 
-Provider-specific metadata fields:
+Exactly one of `Inline` or `Command` must be set on every record. This is
+validated at parse time so broken inventory fails loudly when `kcompass list`
+runs, not silently when `kcompass connect` is later invoked.
 
-| Provider | Required metadata keys |
-|----------|----------------------|
-| `gke`    | `project`, `region`, `cluster_id` |
-| `eks`    | `account_id`, `region`, `cluster_name` |
-| `aks`    | `subscription_id`, `resource_group`, `cluster_name` |
-| `generic`| `server`, `ca_data` |
+#### Two credential modes, one merge path
 
-Auth methods:
+kcompass deliberately has only two ways to obtain a kubeconfig fragment:
 
-| Auth | Behavior |
-|------|----------|
-| `gcloud` | Runs `gcloud container clusters get-credentials` |
-| `aws` | Runs `aws eks update-kubeconfig` |
-| `oidc` | Initiates browser OIDC flow, writes token to kubeconfig |
-| `static` | Reads kubeconfig blob from metadata field `kubeconfig` |
+| Mode | When to use | Example |
+|------|-------------|---------|
+| **`inline`** | The same kubeconfig works for everyone — OIDC with `kubelogin`, `kube-oidc-proxy`, service account tokens behind Netbird, static dev clusters. The kubeconfig is shipped in the record and merged as-is. | A kubeconfig whose user has an `exec:` block invoking `kubectl-oidc_login` |
+| **`command`** | A tool mints per-user credentials on demand — Tailscale operator (`tailscale configure kubeconfig`), GKE (`gcloud container clusters get-credentials`), EKS (`aws eks update-kubeconfig`), or any custom helper. | `[tailscale, configure, kubeconfig, prod]` |
+
+When `command` is used, kcompass runs the argv with `KUBECONFIG` set to a fresh
+temp file, captures the resulting kubeconfig, and removes the temp file. This
+works uniformly for any tool that respects `KUBECONFIG` (gcloud, aws, tailscale,
+kubectl, helm). stdin/stdout/stderr are passed through so interactive prompts
+(e.g. `gcloud auth login` opening a browser) work normally.
+
+#### What's intentionally NOT in the schema
+
+- **Provider** (`gke`/`eks`/`generic`) — was advisory only. The kubeconfig is
+  self-describing; if a human needs to know "this is GKE" it goes in `description`.
+- **Reachability mechanism** (Tailscale, Netbird, VPN) — orthogonal to credentials.
+  How the API server is reachable is a network concern outside kcompass's scope.
+  Netbird and kube-oidc-proxy are invisible to kcompass: they just affect the
+  server URL inside an inline kubeconfig.
+- **Provider-specific metadata maps** — replaced by the kubeconfig itself.
 
 ---
 
@@ -178,14 +195,26 @@ backends:
 Cluster file format (each `.yaml` file in `path`, or a single `clusters.yaml`):
 ```yaml
 clusters:
-  - name: cluster1
-    description: The production cluster.
-    provider: gke
-    auth: gcloud
-    metadata:
-      project: my-project
-      region: us-east1
-      cluster_id: cluster1
+  # Per-user credentials minted by a command
+  - name: nonchord-staging
+    description: Staging cluster (Tailscale operator)
+    labels:
+      env: staging
+      team: platform
+    kubeconfig:
+      command: [tailscale, configure, kubeconfig, nonchord-staging]
+
+  # Embedded kubeconfig for everyone
+  - name: dev-laptop
+    description: Local k3s on the dev laptop
+    kubeconfig:
+      inline: |
+        apiVersion: v1
+        kind: Config
+        clusters:
+          - name: dev-laptop
+            cluster: { server: https://192.168.1.50:6443 }
+        # ...
 ```
 
 ### 3. HTTP / REST API

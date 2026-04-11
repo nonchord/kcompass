@@ -95,7 +95,7 @@ func TestDiscoveryDisabledByConfig(t *testing.T) {
 	assert.Contains(t, out, "No cluster registry found")
 }
 
-func TestConnectStaticAuth(t *testing.T) {
+func TestConnectInlineKubeconfig(t *testing.T) {
 	reg := makeLocalRegistry(t, "local_static.yaml")
 	kubeconfigPath := filepath.Join(t.TempDir(), "kubeconfig")
 	t.Setenv("KUBECONFIG", kubeconfigPath)
@@ -107,4 +107,76 @@ func TestConnectStaticAuth(t *testing.T) {
 
 	_, statErr := os.Stat(kubeconfigPath)
 	assert.NoError(t, statErr, "kubeconfig should have been created")
+}
+
+// TestConnectCommandKubeconfig exercises the command-mode credential path:
+// the cluster record specifies a small shell command that writes a valid
+// kubeconfig to $KUBECONFIG, and connect must capture and merge it.
+func TestConnectCommandKubeconfig(t *testing.T) {
+	// A YAML inventory with one cluster whose kubeconfig.command writes a
+	// minimal kubeconfig to $KUBECONFIG via /bin/sh.
+	const kubeconfigBlob = `apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://10.0.0.1:6443
+  name: cmd-cluster
+contexts:
+- context:
+    cluster: cmd-cluster
+    user: cmd-user
+  name: cmd-cluster
+current-context: cmd-cluster
+users:
+- name: cmd-user
+  user:
+    token: tok
+`
+	dir := t.TempDir()
+	inventoryPath := filepath.Join(dir, "clusters.yaml")
+	scriptPath := filepath.Join(dir, "fake-cred-tool.sh")
+
+	// Script writes a kubeconfig blob to wherever $KUBECONFIG points.
+	script := "#!/bin/sh\ncat > \"$KUBECONFIG\" <<'EOF'\n" + kubeconfigBlob + "EOF\n"
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+
+	inventory := "clusters:\n" +
+		"  - name: cmd-cluster\n" +
+		"    description: Per-user credentials via command\n" +
+		"    kubeconfig:\n" +
+		"      command: [/bin/sh, " + scriptPath + "]\n"
+	require.NoError(t, os.WriteFile(inventoryPath, []byte(inventory), 0o600))
+
+	b, err := backend.NewLocalBackend("local", inventoryPath)
+	require.NoError(t, err)
+	reg := backend.NewRegistry([]backend.Backend{b}, 0)
+
+	kubeconfigPath := filepath.Join(dir, "kubeconfig")
+	t.Setenv("KUBECONFIG", kubeconfigPath)
+
+	out, err := executeWithRegistry(t, reg, "connect", "cmd-cluster")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Done.")
+
+	merged, err := os.ReadFile(kubeconfigPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(merged), "cmd-cluster")
+	assert.Contains(t, string(merged), "10.0.0.1")
+}
+
+// TestConnectInvalidKubeconfigSpec verifies that a record with neither inline
+// nor command produces an error at parse time, not at connect time. (We assert
+// the parse-time failure path through the local backend.)
+func TestConnectInvalidKubeconfigSpec(t *testing.T) {
+	dir := t.TempDir()
+	inventoryPath := filepath.Join(dir, "clusters.yaml")
+	require.NoError(t, os.WriteFile(inventoryPath, []byte(
+		"clusters:\n  - name: broken\n    kubeconfig: {}\n",
+	), 0o600))
+
+	b, err := backend.NewLocalBackend("local", inventoryPath)
+	require.NoError(t, err)
+	_, err = b.List(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "kubeconfig")
 }

@@ -154,22 +154,15 @@ func newGitBackend(t *testing.T, repoURL, cacheDir, repoPath string, fetchTTL ti
 const singleClusterYAML = `clusters:
   - name: git-cluster1
     description: From git.
-    provider: gke
-    auth: gcloud
-    metadata:
-      project: my-project
-      region: us-east1
-      cluster_id: git-cluster1
+    kubeconfig:
+      command: [tailscale, configure, kubeconfig, git-cluster1]
 `
 
 const secondClusterYAML = `clusters:
   - name: git-cluster2
     description: Second cluster.
-    provider: eks
-    auth: aws
-    metadata:
-      region: us-east-1
-      cluster_name: git-cluster2
+    kubeconfig:
+      command: [gcloud, container, clusters, get-credentials, git-cluster2, --region=us-east-1]
 `
 
 const nonClusterYAML = `kind: SomeOtherThing
@@ -370,16 +363,14 @@ func TestGitBackendRefCheckout(t *testing.T) {
 	defaultYAML := `clusters:
   - name: default-cluster
     description: On default branch.
-    provider: generic
-    auth: static
-    metadata: {}
+    kubeconfig:
+      command: [echo, default]
 `
 	branchYAML := `clusters:
   - name: staging-cluster
     description: On staging branch.
-    provider: generic
-    auth: static
-    metadata: {}
+    kubeconfig:
+      command: [echo, staging]
 `
 	repoURL, cacheDir := setupBareRepoWithBranch(t,
 		map[string]string{"clusters.yaml": defaultYAML},
