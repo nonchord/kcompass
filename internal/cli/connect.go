@@ -50,11 +50,15 @@ func NewConnectCommand() *cobra.Command {
 				return fmt.Errorf("connect: %w", err)
 			}
 
-			ctxName, err := kubeconfig.MergeStatic(kubeconfigPath, data, switchCtx)
+			ctxName, reused, err := kubeconfig.MergeStatic(kubeconfigPath, data, switchCtx)
 			if err != nil {
 				return fmt.Errorf("connect: %w", err)
 			}
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Done.")
+			if reused {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "already up to date.")
+			} else {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Done.")
+			}
 			if switchCtx {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Context is set to %s.\n", ctxName)
 			}

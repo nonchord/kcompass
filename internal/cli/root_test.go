@@ -109,6 +109,32 @@ func TestConnectInlineKubeconfig(t *testing.T) {
 	assert.NoError(t, statErr, "kubeconfig should have been created")
 }
 
+// TestConnectReportsAlreadyConnected verifies that a second connect against
+// the same cluster produces a distinct message ("already up to date") instead
+// of the standard "Done." — so users get feedback that the command was a
+// no-op rather than silently re-running the whole merge pipeline.
+func TestConnectReportsAlreadyConnected(t *testing.T) {
+	reg := makeLocalRegistry(t, "local_static.yaml")
+	kubeconfigPath := filepath.Join(t.TempDir(), "kubeconfig")
+	t.Setenv("KUBECONFIG", kubeconfigPath)
+
+	// First connect: fresh merge, should say "Done."
+	firstOut, err := executeWithRegistry(t, reg, "connect", "dev-cluster")
+	require.NoError(t, err)
+	assert.Contains(t, firstOut, "Done.")
+	assert.NotContains(t, firstOut, "already up to date")
+
+	// Second connect: same cluster, same credentials. Should report that
+	// the kubeconfig is already up to date and NOT print "Done.".
+	secondOut, err := executeWithRegistry(t, reg, "connect", "dev-cluster")
+	require.NoError(t, err)
+	assert.Contains(t, secondOut, "already up to date")
+	assert.NotContains(t, secondOut, "Done.",
+		"second connect must not claim it set up anything new")
+	assert.Contains(t, secondOut, "Context is set to dev-cluster",
+		"context switch message still prints on reuse")
+}
+
 // TestConnectCommandKubeconfig exercises the command-mode credential path:
 // the cluster record specifies a small shell command that writes a valid
 // kubeconfig to $KUBECONFIG, and connect must capture and merge it.

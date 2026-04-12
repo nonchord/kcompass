@@ -43,7 +43,7 @@ func copyFixture(t *testing.T, fixture string) string {
 
 func TestMergeIntoEmpty(t *testing.T) {
 	path := copyFixture(t, "kubeconfig_empty.yaml")
-	ctx, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	ctx, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
 	assert.Equal(t, "dev-cluster", ctx)
 
@@ -55,7 +55,7 @@ func TestMergeIntoEmpty(t *testing.T) {
 
 func TestMergeNoConflict(t *testing.T) {
 	path := copyFixture(t, "kubeconfig_existing.yaml")
-	ctx, err := kubeconfig.MergeStatic(path, incomingKubeconfig, false)
+	ctx, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, false)
 	require.NoError(t, err)
 	assert.Equal(t, "dev-cluster", ctx)
 
@@ -68,7 +68,7 @@ func TestMergeNoConflict(t *testing.T) {
 
 func TestMergeConflict(t *testing.T) {
 	path := copyFixture(t, "kubeconfig_conflict.yaml")
-	ctx, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	ctx, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
 	assert.Equal(t, "dev-cluster-1", ctx)
 
@@ -81,7 +81,7 @@ func TestMergeConflict(t *testing.T) {
 
 func TestMergeSwitchContext(t *testing.T) {
 	path := copyFixture(t, "kubeconfig_existing.yaml")
-	_, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	_, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
 	cfg, err := kcmd.LoadFromFile(path)
 	require.NoError(t, err)
@@ -90,7 +90,7 @@ func TestMergeSwitchContext(t *testing.T) {
 
 func TestMergeNoSwitch(t *testing.T) {
 	path := copyFixture(t, "kubeconfig_existing.yaml")
-	_, err := kubeconfig.MergeStatic(path, incomingKubeconfig, false)
+	_, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, false)
 	require.NoError(t, err)
 	cfg, err := kcmd.LoadFromFile(path)
 	require.NoError(t, err)
@@ -99,7 +99,7 @@ func TestMergeNoSwitch(t *testing.T) {
 
 func TestMergeNonExistentFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "subdir", "kubeconfig")
-	ctx, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	ctx, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.NoError(t, err)
 	assert.Equal(t, "dev-cluster", ctx)
 	_, err = os.Stat(path)
@@ -113,8 +113,191 @@ func TestMergeAtomic(t *testing.T) {
 	require.NoError(t, os.Chmod(dir, 0o500))
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
-	_, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	_, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
 	require.Error(t, err)
 	_, statErr := os.Stat(path)
 	assert.True(t, os.IsNotExist(statErr), "original must not be modified on failure")
+}
+
+// TestMergeIdempotent verifies that running MergeStatic twice with the same
+// incoming kubeconfig leaves exactly one entry per cluster/user/context,
+// instead of producing a fresh -1/-2 suffixed duplicate on every call. This
+// is what users see when they run `kcompass connect <cluster>` more than
+// once — before this fix, the second run produced dev-cluster-1, the third
+// produced dev-cluster-2, etc.
+func TestMergeIdempotent(t *testing.T) {
+	path := copyFixture(t, "kubeconfig_empty.yaml")
+
+	_, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	require.NoError(t, err)
+	_, _, err = kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	require.NoError(t, err)
+	_, _, err = kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	require.NoError(t, err)
+
+	cfg, err := kcmd.LoadFromFile(path)
+	require.NoError(t, err)
+	assert.Len(t, cfg.Clusters, 1, "cluster must not duplicate across repeated merges")
+	assert.Len(t, cfg.AuthInfos, 1, "user must not duplicate across repeated merges")
+	assert.Len(t, cfg.Contexts, 1, "context must not duplicate across repeated merges")
+	assert.Contains(t, cfg.Clusters, "dev-cluster")
+	assert.Contains(t, cfg.AuthInfos, "dev-admin")
+	assert.Contains(t, cfg.Contexts, "dev-cluster")
+	assert.Equal(t, "dev-cluster", cfg.CurrentContext)
+}
+
+// TestMergeConflictRewritesContextRefs verifies that when a genuine name
+// collision forces a suffix, the new context's cluster/user refs are
+// rewritten to point at the renamed targets — not at the old ones that
+// still occupy the original slots. This was a latent bug: the rename-only
+// merge used to leave the new context pointing at the old cluster's server
+// URL and the old user's credentials.
+func TestMergeConflictRewritesContextRefs(t *testing.T) {
+	path := copyFixture(t, "kubeconfig_conflict.yaml")
+
+	_, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	require.NoError(t, err)
+
+	cfg, err := kcmd.LoadFromFile(path)
+	require.NoError(t, err)
+
+	// The renamed context must reference the renamed cluster and user.
+	renamedCtx, ok := cfg.Contexts["dev-cluster-1"]
+	require.True(t, ok, "renamed context must exist")
+	assert.Equal(t, "dev-cluster-1", renamedCtx.Cluster,
+		"renamed context must point at renamed cluster, not the original")
+	assert.Equal(t, "dev-admin-1", renamedCtx.AuthInfo,
+		"renamed context must point at renamed user, not the original")
+
+	// And the underlying cluster must be the NEW server, not the existing one.
+	renamedCluster, ok := cfg.Clusters["dev-cluster-1"]
+	require.True(t, ok)
+	assert.Equal(t, "https://new:6443", renamedCluster.Server)
+
+	// The original dev-cluster must still point at the original server.
+	origCluster, ok := cfg.Clusters["dev-cluster"]
+	require.True(t, ok)
+	assert.Equal(t, "https://existing:6443", origCluster.Server)
+}
+
+// TestMergeContextNamespacePreservedOnReconnect simulates the common flow
+// where a user runs `kcompass connect`, then `kubectl config set-context
+// --current --namespace=foo`, then `kcompass connect` again. The second
+// connect must preserve the user's namespace choice — neither rename to
+// -1 nor clobber the namespace with the incoming context's (usually empty)
+// value.
+func TestMergeContextNamespacePreservedOnReconnect(t *testing.T) {
+	path := copyFixture(t, "kubeconfig_empty.yaml")
+
+	// First connect: merge an incoming kubeconfig with no namespace set.
+	_, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	require.NoError(t, err)
+
+	// Simulate `kubectl config set-context --current --namespace=team-a`.
+	cfg, err := kcmd.LoadFromFile(path)
+	require.NoError(t, err)
+	cfg.Contexts["dev-cluster"].Namespace = "team-a"
+	require.NoError(t, kcmd.WriteToFile(*cfg, path))
+
+	// Second connect: merge the same incoming blob again.
+	_, _, err = kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	require.NoError(t, err)
+
+	// The user's namespace choice must still be there, and no duplicate
+	// context entry should have been created.
+	cfg, err = kcmd.LoadFromFile(path)
+	require.NoError(t, err)
+	assert.Len(t, cfg.Contexts, 1, "no -1 suffix; the context slot is reused")
+	assert.Equal(t, "team-a", cfg.Contexts["dev-cluster"].Namespace,
+		"kcompass connect must not clobber the user's namespace preference")
+}
+
+// TestMergeCanonicalFormIsStable pins the determinism assumption that
+// underlies the content-equality check: json.Marshal of a clientcmdapi
+// entry must produce the same bytes on every call for structurally
+// identical inputs. A regression here (e.g. a future client-go adding a
+// custom MarshalJSON that randomizes order) would cause false-negative
+// equality checks and a return of the -1/-2 duplicate bug. The test
+// builds a representative entry that exercises the map and slice fields
+// where order tends to drift — exec env vars and extensions — and
+// marshals it 50 times.
+func TestMergeCanonicalFormIsStable(t *testing.T) {
+	path := copyFixture(t, "kubeconfig_empty.yaml")
+	// Incoming kubeconfig with an exec plugin, env vars, and multiple
+	// clusters/users/contexts — representative of what the Tailscale
+	// operator and cloud-provider tools emit.
+	blob := []byte(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://alpha:6443
+    certificate-authority-data: QUJD
+  name: alpha
+- cluster:
+    server: https://beta:6443
+  name: beta
+contexts:
+- context:
+    cluster: alpha
+    user: alpha-user
+    namespace: team-a
+  name: alpha
+current-context: alpha
+users:
+- name: alpha-user
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1
+      command: /usr/local/bin/auth-plugin
+      args: ["--one", "--two", "--three"]
+      env:
+        - name: Z_LAST
+          value: "1"
+        - name: A_FIRST
+          value: "2"
+        - name: M_MID
+          value: "3"
+      interactiveMode: Never
+      provideClusterInfo: false
+- name: beta-user
+  user:
+    token: flat-token
+`)
+	_, _, err := kubeconfig.MergeStatic(path, blob, true)
+	require.NoError(t, err)
+
+	// Re-merge 50 times. If json.Marshal drifts, even once, the
+	// idempotency check breaks and we get a -1 suffix somewhere.
+	for i := 0; i < 50; i++ {
+		_, _, err := kubeconfig.MergeStatic(path, blob, true)
+		require.NoError(t, err)
+	}
+
+	cfg, err := kcmd.LoadFromFile(path)
+	require.NoError(t, err)
+	assert.Len(t, cfg.Clusters, 2, "clusters must not grow over repeated merges")
+	assert.Len(t, cfg.AuthInfos, 2, "authinfos must not grow over repeated merges")
+	assert.Len(t, cfg.Contexts, 1, "contexts must not grow over repeated merges")
+}
+
+// TestMergeSameNameDifferentContentStillSuffixes pins the rename behavior
+// when names collide with different content, which is the existing
+// TestMergeConflict case but asserted at the API-level against repeated
+// invocations: the first call renames, the second is idempotent (no
+// further suffixes added because the rewritten entry is now present).
+func TestMergeSameNameDifferentContentStillSuffixes(t *testing.T) {
+	path := copyFixture(t, "kubeconfig_conflict.yaml")
+
+	_, _, err := kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	require.NoError(t, err)
+	_, _, err = kubeconfig.MergeStatic(path, incomingKubeconfig, true)
+	require.NoError(t, err)
+
+	cfg, err := kcmd.LoadFromFile(path)
+	require.NoError(t, err)
+	assert.Len(t, cfg.Clusters, 2, "one original + one renamed — no third suffix on rerun")
+	assert.Len(t, cfg.AuthInfos, 2)
+	assert.Len(t, cfg.Contexts, 2)
+	assert.NotContains(t, cfg.Clusters, "dev-cluster-2",
+		"second merge of the same incoming must not add dev-cluster-2")
 }
