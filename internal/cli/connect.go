@@ -8,6 +8,7 @@ import (
 	"os/exec"
 
 	"github.com/spf13/cobra"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/nonchord/kcompass/internal/backend"
 	"github.com/nonchord/kcompass/internal/kubeconfig"
@@ -107,6 +108,13 @@ func resolveKubeconfig(ctx context.Context, rec *backend.ClusterRecord) ([]byte,
 	}
 	if len(data) == 0 {
 		return nil, fmt.Errorf("%s ran successfully but produced no kubeconfig at $KUBECONFIG", argv[0])
+	}
+	// Parse the output here so a broken command is reported at the point
+	// of failure (resolveKubeconfig) with the offending command name,
+	// rather than later with a generic "merge failed to parse incoming"
+	// error that doesn't say which command produced the bad bytes.
+	if _, parseErr := clientcmd.Load(data); parseErr != nil {
+		return nil, fmt.Errorf("%s produced invalid kubeconfig: %w", argv[0], parseErr)
 	}
 	return data, nil
 }

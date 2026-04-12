@@ -37,8 +37,8 @@ func (b *LocalBackend) List(_ context.Context) ([]ClusterRecord, error) {
 }
 
 // Get implements Backend.
-func (b *LocalBackend) Get(_ context.Context, name string) (*ClusterRecord, error) {
-	records, err := b.List(context.Background())
+func (b *LocalBackend) Get(ctx context.Context, name string) (*ClusterRecord, error) {
+	records, err := b.List(ctx)
 	if err != nil {
 		return nil, err
 	}
