@@ -32,9 +32,7 @@ Do not introduce dependencies without a clear reason. Prefer stdlib.
 ## Project Structure
 
 ```
-cmd/
-  kcompass/
-    main.go           # entrypoint only, no logic
+main.go               # entrypoint only, no logic
 internal/
   backend/
     backend.go        # Backend interface, ClusterRecord, KubeconfigSpec

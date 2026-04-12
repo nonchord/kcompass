@@ -23,7 +23,7 @@ Context is set to cluster1.
 **Requires Go 1.26 or later.**
 
 ```sh
-go install github.com/nonchord/kcompass/cmd/kcompass@latest
+go install github.com/nonchord/kcompass@latest
 ```
 
 Or build from source:
@@ -31,7 +31,7 @@ Or build from source:
 ```sh
 git clone https://github.com/nonchord/kcompass.git
 cd kcompass
-go build -o kcompass ./cmd/kcompass
+go build -o kcompass .
 ```
 
 ---
