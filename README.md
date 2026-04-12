@@ -344,10 +344,11 @@ Inventory is validated at parse time, so a malformed record fails loudly during
 Optional modules live in [`terraform/modules/`](terraform/) for operators
 who manage cluster inventory and auto-discovery with infrastructure-as-code:
 
-- [`kcompass_inventory`](terraform/modules/kcompass_inventory) — writes a
-  `ClusterRecord` YAML file into an existing GitHub repo via the
-  `integrations/github` provider. Takes the full `KubeconfigSpec`
-  (inline or command).
+- [`kcompass_inventory`](terraform/modules/kcompass_inventory) — renders a
+  `ClusterRecord` YAML document from a list of cluster entries. Pure
+  value transform with no provider dependency — feed the output into
+  `github_repository_file`, `gitlab_repository_file`, `local_file`,
+  or any other resource that writes a file.
 - [`kcompass_txt`](terraform/modules/kcompass_txt) — pure value formatter
   for the discovery TXT record. Returns `v=kc1; backend=<url>` and the
   conventional label (`kcompass`). Provider-agnostic — feed the outputs

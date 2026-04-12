@@ -1,17 +1,18 @@
 # kcompass_inventory
 
-Writes a single cluster inventory YAML file into an existing GitHub repository. kcompass's git backend walks the repo path and parses every `*.yaml` file with a top-level `clusters:` key, so multiple callers can write to the same repo (one file per environment) and kcompass will merge them.
+Renders a kcompass cluster inventory YAML document from a list of `ClusterRecord` entries. The output is a single string — feed it into whatever mechanism your team uses to commit files to a git repository (GitHub, GitLab, Bitbucket, local file, CI pipeline, etc.).
 
-This module does **not** create the repository. Create it once with `github_repository` (or any equivalent), then point one or more `kcompass_inventory` calls at it.
+This module has **no resources and no provider dependencies**. It's a pure value transform — same pattern as `kcompass_txt`.
+
+kcompass's git backend walks the repo path and parses every `*.yaml` file with a top-level `clusters:` key, so multiple callers can render to the same repo (one file per environment) and kcompass will merge them.
 
 ## Usage
 
-```hcl
-module "staging_inventory" {
-  source = "git::https://github.com/nonchord/kcompass.git//terraform/modules/kcompass_inventory?ref=<tag>"
+### With GitHub
 
-  repository = "clusters"
-  filename   = "staging.yaml"
+```hcl
+module "inventory" {
+  source = "git::https://github.com/nonchord/kcompass.git//terraform/modules/kcompass_inventory?ref=<tag>"
 
   clusters = [
     {
@@ -23,6 +24,35 @@ module "staging_inventory" {
       }
     },
   ]
+}
+
+resource "github_repository_file" "inventory" {
+  repository          = "clusters"
+  file                = "staging.yaml"
+  content             = module.inventory.rendered_yaml
+  commit_message      = "chore(kcompass): update cluster inventory"
+  overwrite_on_create = true
+}
+```
+
+### With GitLab
+
+```hcl
+resource "gitlab_repository_file" "inventory" {
+  project        = "my-group/clusters"
+  file_path      = "staging.yaml"
+  branch         = "main"
+  content        = base64encode(module.inventory.rendered_yaml)
+  commit_message = "chore(kcompass): update cluster inventory"
+}
+```
+
+### With a local file (for air-gapped / manual workflows)
+
+```hcl
+resource "local_file" "inventory" {
+  filename = "${path.root}/clusters/staging.yaml"
+  content  = module.inventory.rendered_yaml
 }
 ```
 
@@ -44,19 +74,14 @@ The module's variable validation rejects records that set neither or both of `in
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `repository` | string | — | Existing GitHub repository name under the provider's configured owner. |
-| `filename` | string | — | Path within the repo where this inventory file is written. Each caller writing to the same repo must use a distinct filename. |
-| `branch` | string | `null` (repo default) | Branch to commit on. |
-| `commit_message` | string | `"chore(kcompass): update cluster inventory"` | Commit message. |
 | `clusters` | list(object) | — | See schema above. |
 
 ## Outputs
 
 | Name | Description |
 |---|---|
-| `filename` | The file path written inside the inventory repository. |
-| `rendered_yaml` | The full YAML document committed. Useful for local preview or tests. |
+| `rendered_yaml` | The full YAML document. Feed this into a git provider resource or a local file. |
 
 ## Provider requirements
 
-This module requires the `integrations/github` provider (≥ 6.0) to be configured in the calling module with appropriate credentials. It creates one `github_repository_file` resource per invocation.
+None. This module is a pure value transform with no resources.
