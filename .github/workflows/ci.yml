@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
 jobs:
   test:
     name: Test
@@ -60,8 +64,10 @@ jobs:
         uses: ffurrer2/extract-release-notes@v3
 
       - name: Verify release notes are non-empty
+        env:
+          RELEASE_NOTES: ${{ steps.extract-release-notes.outputs.release_notes }}
         run: |
-          if [ -z "${{ steps.extract-release-notes.outputs.release_notes }}" ]; then
+          if [ -z "$RELEASE_NOTES" ]; then
             echo "::error::No release notes extracted from CHANGELOG.md"
             exit 1
           fi

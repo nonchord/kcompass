@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
 jobs:
   goreleaser:
     name: GoReleaser
@@ -28,7 +32,9 @@ jobs:
         uses: ffurrer2/extract-release-notes@v3
 
       - name: Write release notes to file
-        run: echo "${{ steps.extract-release-notes.outputs.release_notes }}" > /tmp/release-notes.md
+        env:
+          RELEASE_NOTES: ${{ steps.extract-release-notes.outputs.release_notes }}
+        run: echo "$RELEASE_NOTES" > /tmp/release-notes.md
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
