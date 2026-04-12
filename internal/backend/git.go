@@ -29,6 +29,7 @@ type GitBackend struct {
 	ref      string
 	cacheDir string
 	fetchTTL time.Duration
+	log      func(string)
 }
 
 // GitBackendConfig holds all options for NewGitBackend.
@@ -39,6 +40,10 @@ type GitBackendConfig struct {
 	Ref      string        // branch/tag/SHA; "" means the default branch
 	CacheDir string        // root cache dir; "" defaults to ~/.kcompass/cache/git
 	FetchTTL time.Duration // how often to fetch from remote; 0 means always fetch
+	// Log, when non-nil, receives diagnostic messages for operations that
+	// are silently best-effort (fetch failures on an existing clone, cache
+	// timestamp write errors). Wired to --verbose in the CLI.
+	Log func(string)
 }
 
 // NewGitBackend creates a GitBackend from the provided config.
@@ -64,6 +69,7 @@ func NewGitBackend(cfg GitBackendConfig) (*GitBackend, error) {
 		ref:      cfg.Ref,
 		cacheDir: cacheDir,
 		fetchTTL: cfg.FetchTTL,
+		log:      cfg.Log,
 	}, nil
 }
 
@@ -117,7 +123,11 @@ func (b *GitBackend) ensureRepo(ctx context.Context, cloneDir string) error {
 	}
 	if b.fetchTTL == 0 || b.fetchExpired(cloneDir) {
 		// Fetch failures are non-fatal: work with the cached copy.
-		_ = b.fetchRepo(ctx, cloneDir)
+		// Log the error when --verbose is set so operators debugging
+		// stale-cache issues have a signal.
+		if err := b.fetchRepo(ctx, cloneDir); err != nil && b.log != nil {
+			b.log(fmt.Sprintf("git backend: fetch from %s failed, using cached copy: %v", b.url, err))
+		}
 	}
 	return nil
 }
@@ -136,12 +146,19 @@ func (b *GitBackend) fetchExpired(cloneDir string) bool {
 }
 
 // writeFetchTimestamp records the current time so fetchExpired can check it.
-func writeFetchTimestamp(cloneDir string) {
+// Errors are logged (if a logger is set) but not returned — a failed
+// timestamp write means the next List re-fetches unnecessarily, which is
+// extra work but not incorrect.
+func (b *GitBackend) writeFetchTimestamp(cloneDir string) {
 	data, err := time.Now().MarshalText()
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(filepath.Join(cloneDir, lastFetchFile), data, 0o600)
+	if err := os.WriteFile(filepath.Join(cloneDir, lastFetchFile), data, 0o600); err != nil {
+		if b.log != nil {
+			b.log(fmt.Sprintf("git backend: write fetch timestamp: %v", err))
+		}
+	}
 }
 
 // cloneRepo performs an initial clone into cloneDir.
@@ -173,7 +190,7 @@ func (b *GitBackend) cloneRepo(ctx context.Context, cloneDir string) error {
 		}
 		return fmt.Errorf("clone %s: %w", b.url, cloneErr)
 	}
-	writeFetchTimestamp(cloneDir)
+	b.writeFetchTimestamp(cloneDir)
 	return nil
 }
 
@@ -202,7 +219,7 @@ func (b *GitBackend) fetchRepo(ctx context.Context, cloneDir string) error {
 		}
 		return fmt.Errorf("pull %s: %w", b.url, err)
 	}
-	writeFetchTimestamp(cloneDir)
+	b.writeFetchTimestamp(cloneDir)
 	return nil
 }
 
