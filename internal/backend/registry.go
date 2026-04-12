@@ -37,18 +37,23 @@ func (r *Registry) Name() string { return "registry" }
 func (r *Registry) Backends() []Backend { return r.backends }
 
 // List implements Backend. Results are cached for the configured TTL.
+//
+// The whole operation runs under r.mu so concurrent callers collapse to a
+// single backend walk rather than racing to recompute and overwrite each
+// other's cache entry. kcompass is a CLI with only occasional concurrent
+// List callers, so the serialization cost is negligible and correctness
+// (one consistent view of the cache) wins.
 func (r *Registry) List(ctx context.Context) ([]ClusterRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
 	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if r.cache != nil && r.ttl > 0 && time.Now().Before(r.cache.expiry) {
-		cached := r.cache.records
-		r.mu.Unlock()
-		return cached, nil
+		return r.cache.records, nil
 	}
-	r.mu.Unlock()
 
 	seen := make(map[string]bool)
 	var merged []ClusterRecord
@@ -66,10 +71,7 @@ func (r *Registry) List(ctx context.Context) ([]ClusterRecord, error) {
 		}
 	}
 
-	r.mu.Lock()
 	r.cache = &cachedList{records: merged, expiry: time.Now().Add(r.ttl)}
-	r.mu.Unlock()
-
 	return merged, nil
 }
 

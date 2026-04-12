@@ -190,6 +190,47 @@ users:
 	assert.Contains(t, string(merged), "10.0.0.1")
 }
 
+// TestConnectCommandProducesInvalidKubeconfig verifies that when a
+// kubeconfig.command runs successfully but writes garbage to $KUBECONFIG,
+// connect reports the error at the point of failure (naming the offending
+// command) instead of letting the bad bytes propagate into the merge phase
+// where the error would be attributed to the merge layer.
+func TestConnectCommandProducesInvalidKubeconfig(t *testing.T) {
+	dir := t.TempDir()
+	inventoryPath := filepath.Join(dir, "clusters.yaml")
+	scriptPath := filepath.Join(dir, "broken-cred-tool.sh")
+
+	// Script writes non-kubeconfig garbage to $KUBECONFIG.
+	script := "#!/bin/sh\necho 'this is not a valid kubeconfig' > \"$KUBECONFIG\"\n"
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+
+	inventory := "clusters:\n" +
+		"  - name: broken-cluster\n" +
+		"    description: A command that writes nonsense\n" +
+		"    kubeconfig:\n" +
+		"      command: [/bin/sh, " + scriptPath + "]\n"
+	require.NoError(t, os.WriteFile(inventoryPath, []byte(inventory), 0o600))
+
+	b, err := backend.NewLocalBackend("local", inventoryPath)
+	require.NoError(t, err)
+	reg := backend.NewRegistry([]backend.Backend{b}, 0)
+
+	kubeconfigPath := filepath.Join(dir, "kubeconfig")
+	t.Setenv("KUBECONFIG", kubeconfigPath)
+
+	_, err = executeWithRegistry(t, reg, "connect", "broken-cluster")
+	require.Error(t, err)
+	// Error must name the command and say the output is invalid, not
+	// bubble up as a generic merge-time parse error.
+	assert.Contains(t, err.Error(), "produced invalid kubeconfig")
+	assert.Contains(t, err.Error(), "/bin/sh")
+
+	// Nothing should have been written to the user's kubeconfig.
+	_, statErr := os.Stat(kubeconfigPath)
+	assert.True(t, os.IsNotExist(statErr),
+		"no kubeconfig should be written when the command output is invalid")
+}
+
 // TestConnectInvalidKubeconfigSpec verifies that a record with neither inline
 // nor command produces an error at parse time, not at connect time. (We assert
 // the parse-time failure path through the local backend.)

@@ -188,7 +188,9 @@ func writeInventoryRecord(rec backend.ClusterRecord, outputPath string, stdout i
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	if err := os.WriteFile(outputPath, out, 0o644); err != nil {
+	// 0o600: inventory entries can embed inline kubeconfigs (which contain
+	// bearer tokens and client certs), so the file should be user-only.
+	if err := os.WriteFile(outputPath, out, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", outputPath, err)
 	}
 	_, _ = fmt.Fprintf(stdout, "Added %q to %s\n", rec.Name, outputPath)
