@@ -87,7 +87,7 @@ func buildRegistry(ctx context.Context, cfgPath string, log func(string)) (*back
 
 	var backends []backend.Backend
 	for _, bc := range cfg.Backends {
-		b, buildErr := buildBackend(bc)
+		b, buildErr := buildBackend(bc, log)
 		if buildErr != nil {
 			return nil, buildErr
 		}
@@ -124,7 +124,7 @@ func discoveryEnabled(cfg *config.Config) bool {
 }
 
 // buildBackend constructs a single Backend from a BackendConfig.
-func buildBackend(bc config.BackendConfig) (backend.Backend, error) {
+func buildBackend(bc config.BackendConfig, log func(string)) (backend.Backend, error) {
 	switch bc.Type {
 	case "local":
 		path, _ := bc.Options["path"].(string)
@@ -144,6 +144,7 @@ func buildBackend(bc config.BackendConfig) (backend.Backend, error) {
 			URL:      url,
 			RepoPath: repoPath,
 			Ref:      ref,
+			Log:      log,
 		})
 	default:
 		return nil, fmt.Errorf("unknown backend type %q", bc.Type)

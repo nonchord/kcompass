@@ -333,6 +333,40 @@ func TestGitBackendFetchFailuresAreNonFatal(t *testing.T) {
 	assert.Len(t, records, 1, "cached copy should still be returned")
 }
 
+// TestGitBackendFetchFailureLogsWhenVerbose verifies that when a Log callback
+// is set (wired to --verbose in production), the swallowed fetch error is
+// emitted as a diagnostic rather than silently discarded. Without this,
+// operators debugging stale-cache issues had no signal.
+func TestGitBackendFetchFailureLogsWhenVerbose(t *testing.T) {
+	repoURL, cacheDir := setupBareRepo(t, map[string]string{
+		"clusters.yaml": singleClusterYAML,
+	})
+	var logged []string
+	b, err := backend.NewGitBackend(backend.GitBackendConfig{
+		Name:     "test-git",
+		URL:      repoURL,
+		CacheDir: cacheDir,
+		FetchTTL: time.Millisecond,
+		Log:      func(s string) { logged = append(logged, s) },
+	})
+	require.NoError(t, err)
+
+	_, err = b.List(context.Background())
+	require.NoError(t, err)
+
+	// Kill the remote.
+	require.NoError(t, os.RemoveAll(repoURL[len("file://"):]))
+	time.Sleep(10 * time.Millisecond)
+
+	_, err = b.List(context.Background())
+	require.NoError(t, err)
+
+	// The Log callback should have received a diagnostic about the failed fetch.
+	require.NotEmpty(t, logged, "Log callback must fire on fetch failure")
+	assert.Contains(t, logged[0], "fetch from")
+	assert.Contains(t, logged[0], "using cached copy")
+}
+
 // TestGitBackendFetchPicksUpNewCommits verifies that after the TTL expires a
 // subsequent List returns content added in a new upstream commit.
 func TestGitBackendFetchPicksUpNewCommits(t *testing.T) {
