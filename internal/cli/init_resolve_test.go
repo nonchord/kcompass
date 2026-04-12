@@ -193,15 +193,13 @@ func TestInitFallsBackToLocalOnTXTMiss(t *testing.T) {
 	assert.Equal(t, "example.com", cfg.Backends[0].Options["path"])
 }
 
-// TestInitRejectsMissingLocalPath verifies that without --skip-verify, init
-// refuses to register a local backend whose path does not exist, and does
-// not write to the config file. This is the scenario the user hit running
-// `kcompass init nonchord.com` on a machine that couldn't TXT-resolve the
-// zone and then silently got a broken local entry.
-func TestInitRejectsMissingLocalPath(t *testing.T) {
-	// Stub TXT lookup so that the zone-resolution path misses and the
-	// fallback treats "example.com" as a local file path — same flow the
-	// user saw.
+// TestInitRejectsZoneShapedTargetWithBothLookupsFailing verifies the exact
+// scenario that originally motivated this error classifier: a user types
+// `kcompass init nonchord.com` on a machine that can't resolve the TXT
+// record, the zone-mode path misses, the fallback treats the target as a
+// local file (which also doesn't exist), and the error must name BOTH
+// possible interpretations so the user has something actionable to fix.
+func TestInitRejectsZoneShapedTargetWithBothLookupsFailing(t *testing.T) {
 	stubLookupTXT(t, func(_ context.Context, _ string) ([]string, error) {
 		return nil, errors.New("no record")
 	})
@@ -217,12 +215,50 @@ func TestInitRejectsMissingLocalPath(t *testing.T) {
 	err := root.Execute()
 
 	require.Error(t, err, "init must reject an unreadable local path")
-	assert.Contains(t, err.Error(), "cannot access")
+	msg := err.Error()
+	// Message must explain both the zone miss and the file miss, and
+	// suggest how to fix each.
+	assert.Contains(t, msg, "looks like a DNS zone")
+	assert.Contains(t, msg, "kcompass.example.com")
+	assert.Contains(t, msg, "v=kc1")
+	assert.Contains(t, msg, "URL scheme")
 
 	// No config file should have been created.
 	_, statErr := os.Stat(cfgPath)
 	assert.True(t, os.IsNotExist(statErr),
 		"init must not write config when verification fails, got stat error: %v", statErr)
+}
+
+// TestInitRejectsMissingPlainPath verifies the non-zone-shaped branch of
+// the error classifier. An explicit file path that doesn't exist should
+// produce a clean "no file or directory at X" error — no DNS hint, no
+// long multi-line message about URL schemes.
+func TestInitRejectsMissingPlainPath(t *testing.T) {
+	// Stub TXT lookup so it's deterministic even though looksLikeDNSZone
+	// will reject this target anyway (has a slash).
+	stubLookupTXT(t, func(_ context.Context, _ string) ([]string, error) {
+		return nil, errors.New("no record")
+	})
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+
+	root := NewRootCommand()
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	root.SetArgs([]string{"--config", cfgPath, "init", "/tmp/kcompass-no-such-dir/clusters.yaml"})
+	err := root.Execute()
+
+	require.Error(t, err)
+	msg := err.Error()
+	assert.Contains(t, msg, "no file or directory")
+	// Must NOT show the DNS-zone hint for a plain path.
+	assert.NotContains(t, msg, "DNS zone")
+	assert.NotContains(t, msg, "v=kc1")
+
+	_, statErr := os.Stat(cfgPath)
+	assert.True(t, os.IsNotExist(statErr))
 }
 
 // TestInitVerifiesLocalHappyPath exercises the happy path: init against a

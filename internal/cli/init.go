@@ -106,8 +106,10 @@ pre-configuring a machine before joining the network).`,
 // verifyBackend constructs a backend from the target string and calls List
 // once, so init can fail loudly when the backend is unreachable, misspelled,
 // or inaccessible instead of silently writing a broken entry to config.
-// On backend.ErrAccessDenied the friendly message is printed to stderr; other
-// errors surface as a generic "cannot access" wrap.
+// On backend.ErrAccessDenied the friendly message is printed to stderr;
+// other errors are classified by classifyInitError to surface actionable
+// hints ("did you mean a DNS zone?", "no file at X", etc.) rather than a
+// generic wrap.
 func verifyBackend(cmd *cobra.Command, target string) error {
 	b, err := backend.NewBackendFromURL(target)
 	if err != nil {
@@ -119,9 +121,35 @@ func verifyBackend(cmd *cobra.Command, target string) error {
 			return err
 		}
 		cmd.SilenceUsage = true
-		return fmt.Errorf("init: cannot access %s: %w", target, err)
+		return classifyInitError(target, err)
 	}
 	return nil
+}
+
+// classifyInitError turns a raw backend.List error into a user-facing
+// message that says what went wrong and — where possible — hints at how
+// to recover. The most common confusion: a user types `kcompass init
+// nonchord.com` on a machine that can't TXT-resolve the zone, kcompass
+// falls through to treating it as a local path, and the user gets a
+// cryptic stat error. This function catches that case and explains both
+// possibilities.
+func classifyInitError(target string, err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		if looksLikeDNSZone(target) {
+			return fmt.Errorf(
+				"init: %q looks like a DNS zone, but no TXT record was found at kcompass.%s, "+
+					"and no file exists at that path either.\n"+
+					"  - To use DNS discovery, ensure a `v=kc1; backend=<url>` record is published at kcompass.%s.\n"+
+					"  - To register a git backend directly, include the URL scheme (`https://`, `git@`, etc).\n"+
+					"  - To register a local file, use an explicit path like `./%s` or an absolute path",
+				target, target, target, target)
+		}
+		return fmt.Errorf("init: no file or directory at %q", target)
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return fmt.Errorf("init: permission denied reading %q — check the file permissions", target)
+	}
+	return fmt.Errorf("init: cannot access %s: %w", target, err)
 }
 
 // looksLikeDNSZone reports whether target is plausibly a DNS zone (as opposed
