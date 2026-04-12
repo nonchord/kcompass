@@ -46,3 +46,23 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: latest
+
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_wrapper: false
+
+      - name: Format check
+        run: tofu fmt -check -recursive terraform/
+
+      - name: Init example
+        run: tofu -chdir=terraform/examples/basic init -backend=false -input=false
+
+      - name: Validate example
+        run: tofu -chdir=terraform/examples/basic validate

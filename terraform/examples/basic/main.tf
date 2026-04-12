@@ -13,15 +13,13 @@ provider "github" {
   owner = "example-org"
 }
 
-# kcompass_inventory writes one YAML file into an existing GitHub repo.
-# The repo itself is expected to already exist — create it with the
-# integrations/github provider's github_repository resource outside this
-# module (and optionally seed a README via auto_init = true).
+# kcompass_inventory is a pure renderer — it takes a list of cluster records
+# and outputs a YAML document. No resources, no provider dependency. The
+# github_repository_file below is the provider-specific part that commits
+# the rendered YAML into a GitHub repo. For GitLab, Bitbucket, or local
+# files, swap that resource for your provider's equivalent.
 module "inventory" {
   source = "../../modules/kcompass_inventory"
-
-  repository = "clusters"
-  filename   = "example.yaml"
 
   clusters = [
     # A Tailscale-operator cluster: `tailscale configure kubeconfig` mints
@@ -74,6 +72,17 @@ module "inventory" {
       }
     },
   ]
+}
+
+# Commit the rendered inventory into a GitHub repo. This is the only
+# provider-specific part — swap for gitlab_repository_file, local_file,
+# or your CI's commit mechanism if you're not on GitHub.
+resource "github_repository_file" "inventory" {
+  repository          = "clusters"
+  file                = "example.yaml"
+  content             = module.inventory.rendered_yaml
+  commit_message      = "chore(kcompass): update cluster inventory"
+  overwrite_on_create = true
 }
 
 # kcompass_txt returns the TXT record value you'd publish at

@@ -2,7 +2,7 @@ ROOT    := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 BINARY  := kcompass
 GOFLAGS ?=
 
-.PHONY: all build test lint vet fmt cover clean install check
+.PHONY: all build test lint vet fmt cover clean install check tf-fmt tf-validate tf-check
 
 all: lint test build
 
@@ -29,8 +29,17 @@ vet:
 fmt:
 	cd $(ROOT) && gofmt -w .
 
-check: fmt vet lint test
+check: fmt vet lint test tf-check
 	@echo "All checks passed."
+
+tf-fmt:
+	cd $(ROOT) && tofu fmt -recursive terraform/
+
+tf-validate:
+	cd $(ROOT)/terraform/examples/basic && tofu init -backend=false -input=false && tofu validate
+
+tf-check: tf-validate
+	cd $(ROOT) && tofu fmt -check -recursive terraform/
 
 clean:
 	rm -f $(ROOT)/$(BINARY) $(ROOT)/coverage.out

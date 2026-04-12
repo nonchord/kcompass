@@ -1,12 +1,5 @@
 terraform {
   required_version = ">= 1.3.0"
-
-  required_providers {
-    github = {
-      source  = "integrations/github"
-      version = ">= 6.0"
-    }
-  }
 }
 
 locals {
@@ -25,15 +18,4 @@ locals {
       )
     ]
   }
-
-  rendered = "# Managed by terraform module kcompass_inventory. Do not edit by hand.\n${yamlencode(local.inventory)}"
-}
-
-resource "github_repository_file" "inventory" {
-  repository          = var.repository
-  file                = var.filename
-  content             = local.rendered
-  branch              = var.branch
-  commit_message      = var.commit_message
-  overwrite_on_create = true
 }
