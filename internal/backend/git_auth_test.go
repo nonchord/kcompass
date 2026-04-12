@@ -26,7 +26,6 @@ func TestIsAuthError(t *testing.T) {
 		{"not found but unrelated", errors.New("file not found"), false},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			assert.Equal(t, c.want, isAuthError(c.err))
 		})
