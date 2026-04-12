@@ -35,7 +35,6 @@ func TestLooksLikeDNSZone(t *testing.T) {
 		{"ssh://git@github.com/org/clusters", false},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.in, func(t *testing.T) {
 			assert.Equal(t, c.want, looksLikeDNSZone(c.in))
 		})
