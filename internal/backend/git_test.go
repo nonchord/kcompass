@@ -300,6 +300,39 @@ func TestGitBackendRepoPathSubdir(t *testing.T) {
 	assert.Equal(t, "git-cluster1", records[0].Name)
 }
 
+// TestGitBackendFetchFailuresAreNonFatal covers the partial-clone recovery
+// path in fetchRepo: if an established clone exists but the remote becomes
+// unreachable, List must still succeed with the cached copy rather than
+// propagating the fetch error. ensureRepo explicitly swallows fetch errors
+// for this exact reason, and this test pins that behavior so it can't
+// silently regress into "network blip breaks kcompass list".
+func TestGitBackendFetchFailuresAreNonFatal(t *testing.T) {
+	repoURL, cacheDir := setupBareRepo(t, map[string]string{
+		"clusters.yaml": singleClusterYAML,
+	})
+	// fetchTTL is very short so the second List triggers a fetch.
+	b := newGitBackend(t, repoURL, cacheDir, "", time.Millisecond)
+
+	// First List: clones the bare repo into the cache dir.
+	records, err := b.List(context.Background())
+	require.NoError(t, err)
+	assert.Len(t, records, 1)
+
+	// Rip the remote out from under the backend.
+	bareDir := repoURL[len("file://"):]
+	require.NoError(t, os.RemoveAll(bareDir))
+
+	// Wait out the tiny TTL so the next List runs a fetch.
+	time.Sleep(10 * time.Millisecond)
+
+	// Second List: ensureRepo sees the existing clone, tries to fetch
+	// (which fails because the bare repo is gone), and must return the
+	// cached records anyway.
+	records, err = b.List(context.Background())
+	require.NoError(t, err, "fetch failures must not fail List")
+	assert.Len(t, records, 1, "cached copy should still be returned")
+}
+
 // TestGitBackendFetchPicksUpNewCommits verifies that after the TTL expires a
 // subsequent List returns content added in a new upstream commit.
 func TestGitBackendFetchPicksUpNewCommits(t *testing.T) {
