@@ -1,3 +1,4 @@
 # Build output
 /kcompass
 coverage.out
+dist/

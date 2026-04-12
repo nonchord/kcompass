@@ -7,8 +7,16 @@ import (
 	"github.com/nonchord/kcompass/internal/cli"
 )
 
+// Set by goreleaser via ldflags at build time.
+var (
+	version = "dev"
+	commit  = "none"
+)
+
 func main() {
-	if err := cli.NewRootCommand().Execute(); err != nil {
+	root := cli.NewRootCommand()
+	root.Version = version + " (" + commit + ")"
+	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
