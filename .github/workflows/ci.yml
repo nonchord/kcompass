@@ -47,6 +47,40 @@ jobs:
         with:
           version: latest
 
+  release-dry-run:
+    name: Release (dry run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract release notes
+        id: extract-release-notes
+        uses: ffurrer2/extract-release-notes@v3
+
+      - name: Verify release notes are non-empty
+        run: |
+          if [ -z "${{ steps.extract-release-notes.outputs.release_notes }}" ]; then
+            echo "::error::No release notes extracted from CHANGELOG.md"
+            exit 1
+          fi
+          echo "Release notes extracted successfully."
+
+      - name: Set up Go
+        if: github.ref == 'refs/heads/main'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: GoReleaser build (main only)
+        if: github.ref == 'refs/heads/main'
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: build --snapshot --clean
+
   terraform:
     name: Terraform
     runs-on: ubuntu-latest
