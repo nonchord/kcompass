@@ -23,7 +23,7 @@ Context is set to cluster1.
 **Requires Go 1.26 or later.**
 
 ```sh
-go install github.com/nonchord/kcompass/cmd/kcompass@latest
+go install github.com/nonchord/kcompass@latest
 ```
 
 Or build from source:
@@ -31,7 +31,26 @@ Or build from source:
 ```sh
 git clone https://github.com/nonchord/kcompass.git
 cd kcompass
-go build -o kcompass ./cmd/kcompass
+make build        # or: go build -o kcompass .
+```
+
+### Development
+
+**Prerequisites:**
+
+- [Go](https://go.dev/dl/) 1.26+
+- [golangci-lint](https://golangci-lint.run/welcome/install/) (for `make lint` / `make check`)
+- [OpenTofu](https://opentofu.org/docs/intro/install/) or [Terraform](https://developer.hashicorp.com/terraform/install) 1.3+ (only if working on the `terraform/` modules)
+
+A `Makefile` provides the standard workflows:
+
+```sh
+make              # lint + test + build (default target)
+make test         # go test -race ./...
+make lint         # golangci-lint
+make cover        # test with coverage report
+make check        # fmt + vet + lint + test
+make clean        # remove build artifacts
 ```
 
 ---
