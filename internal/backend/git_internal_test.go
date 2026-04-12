@@ -69,8 +69,8 @@ func TestNewGitBackendCustomCacheDir(t *testing.T) {
 		CacheDir: dir,
 	})
 	require.NoError(t, err)
-	// CloneDir is a hash under the cache root, so assert it's inside dir.
-	cloneDir := b.CloneDir()
+	// cloneDir is a hash under the cache root, so assert it's inside dir.
+	cloneDir := b.cloneDir()
 	assert.Equal(t, dir, filepath.Dir(cloneDir),
 		"clone dir should be an immediate child of the configured cache dir")
 }
@@ -102,7 +102,7 @@ func TestNewGitBackendTildeExpansion(t *testing.T) {
 	})
 	require.NoError(t, err)
 	// Cache dir should start with the user's home directory, not a literal "~".
-	cloneDir := b.CloneDir()
+	cloneDir := b.cloneDir()
 	assert.NotContains(t, cloneDir, "~",
 		"~-prefixed cache dirs must be expanded before use")
 }
