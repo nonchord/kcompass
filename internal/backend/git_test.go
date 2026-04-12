@@ -374,8 +374,10 @@ func TestGitBackendCacheHitNoFetch(t *testing.T) {
 	_, err := b.List(context.Background())
 	require.NoError(t, err)
 
-	// Record the fetch timestamp written after the initial clone.
-	tsPath := filepath.Join(b.CloneDir(), ".kcompass-last-fetch")
+	// The backend creates exactly one subdirectory under cacheDir (a
+	// hash of the repo URL); find it by scanning rather than relying on
+	// the unexported naming scheme.
+	tsPath := filepath.Join(singleCloneDir(t, cacheDir), ".kcompass-last-fetch")
 	info1, err := os.Stat(tsPath)
 	require.NoError(t, err)
 
@@ -388,6 +390,18 @@ func TestGitBackendCacheHitNoFetch(t *testing.T) {
 	info2, err := os.Stat(tsPath)
 	require.NoError(t, err)
 	assert.Equal(t, info1.ModTime(), info2.ModTime(), "fetch timestamp must not change within TTL")
+}
+
+// singleCloneDir finds the single hash-named subdirectory the git backend
+// creates under cacheDir. Used by tests that need to peek at clone-local
+// files (e.g. the fetch timestamp) without reaching into the backend's
+// unexported cloneDir() method.
+func singleCloneDir(t *testing.T, cacheDir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(cacheDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "test expects exactly one clone under %s", cacheDir)
+	return filepath.Join(cacheDir, entries[0].Name())
 }
 
 // TestGitBackendRefCheckout verifies that specifying a Ref checks out that

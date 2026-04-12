@@ -32,12 +32,20 @@ func TestIsAuthError(t *testing.T) {
 	}
 }
 
-// TestAccessDeniedWrappingChain verifies that fmt.Errorf with two %w verbs
-// correctly chains both ErrAccessDenied and the original error, so that
-// errors.Is walks the chain and finds the sentinel.
+// TestAccessDeniedWrappingChain verifies that the single-%w wrap used by
+// cloneRepo and fetchRepo makes ErrAccessDenied reachable via errors.Is,
+// while the underlying transport error is present in the message text
+// (via %v) for debug purposes but NOT in the error chain. This matches
+// how the CLI consumes the error: printAccessDenied checks for
+// ErrAccessDenied only, and the raw form reads cleanly without two
+// colon-joined error phrases.
 func TestAccessDeniedWrappingChain(t *testing.T) {
 	original := transport.ErrAuthenticationRequired
-	wrapped := fmt.Errorf("clone https://example/r: %w: %w", ErrAccessDenied, original)
-	assert.True(t, errors.Is(wrapped, ErrAccessDenied), "errors.Is should find ErrAccessDenied")
-	assert.True(t, errors.Is(wrapped, original), "errors.Is should find the underlying auth error")
+	wrapped := fmt.Errorf("clone https://example/r: %w (%v)", ErrAccessDenied, original)
+	assert.True(t, errors.Is(wrapped, ErrAccessDenied),
+		"errors.Is must find ErrAccessDenied in the chain")
+	assert.False(t, errors.Is(wrapped, original),
+		"the underlying transport error is in the message text, not the chain")
+	assert.Contains(t, wrapped.Error(), original.Error(),
+		"the underlying error's message should still appear for debug")
 }

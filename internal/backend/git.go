@@ -101,15 +101,14 @@ func (b *GitBackend) Get(ctx context.Context, name string) (*ClusterRecord, erro
 	return nil, ErrNotFound
 }
 
-// CloneDir returns the local directory used for this repository's clone.
-// Exposed for testing.
-func (b *GitBackend) CloneDir() string {
+// cloneDir returns the local directory used for this repository's clone.
+// The path is a hash-named subdirectory under b.cacheDir, so two backends
+// pointed at different URLs never collide even when they share a cache
+// root.
+func (b *GitBackend) cloneDir() string {
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(b.url)))
 	return filepath.Join(b.cacheDir, hash)
 }
-
-// cloneDir is the internal alias used throughout this file.
-func (b *GitBackend) cloneDir() string { return b.CloneDir() }
 
 // ensureRepo clones the repo if absent, or fetches if the TTL has expired.
 func (b *GitBackend) ensureRepo(ctx context.Context, cloneDir string) error {
@@ -164,7 +163,13 @@ func (b *GitBackend) cloneRepo(ctx context.Context, cloneDir string) error {
 	if _, cloneErr := git.PlainCloneContext(ctx, cloneDir, false, opts); cloneErr != nil {
 		_ = os.RemoveAll(cloneDir)
 		if isAuthError(cloneErr) {
-			return fmt.Errorf("clone %s: %w: %w", b.url, ErrAccessDenied, cloneErr)
+			// Single %w wrap on the sentinel + %v on the underlying error:
+			// errors.Is(err, ErrAccessDenied) still works (so list/connect
+			// can catch it and print the friendly message), and the raw
+			// form prints cleanly as
+			//   "clone <url>: access denied to cluster inventory (<raw>)"
+			// instead of the two-phrase colon-chain a double %w produces.
+			return fmt.Errorf("clone %s: %w (%v)", b.url, ErrAccessDenied, cloneErr)
 		}
 		return fmt.Errorf("clone %s: %w", b.url, cloneErr)
 	}
@@ -193,7 +198,7 @@ func (b *GitBackend) fetchRepo(ctx context.Context, cloneDir string) error {
 	err = wt.PullContext(ctx, opts)
 	if err != nil && err != git.NoErrAlreadyUpToDate {
 		if isAuthError(err) {
-			return fmt.Errorf("pull %s: %w: %w", b.url, ErrAccessDenied, err)
+			return fmt.Errorf("pull %s: %w (%v)", b.url, ErrAccessDenied, err)
 		}
 		return fmt.Errorf("pull %s: %w", b.url, err)
 	}
