@@ -55,12 +55,21 @@ kcompass init ~/my-clusters.yaml
 # Git repository (https or ssh URL)
 kcompass init git@github.com:your-org/clusters
 
+# DNS zone — resolves the TXT record at kcompass.<zone> to a backend URL
+kcompass init example.com
+
 # List all clusters
 kcompass list
 
 # Connect (resolves credentials, merges kubeconfig, sets current context)
 kcompass connect my-cluster
 ```
+
+`kcompass init` verifies the backend is actually reachable before writing it
+to the config, so a misspelled path or a private repo you don't have access
+to is caught immediately instead of on the next `kcompass list`. Pass
+`--skip-verify` to bypass (useful when pre-configuring a machine before it
+can reach the backend).
 
 If you're an operator wanting other engineers to discover your registry without
 manual setup, see [`kcompass operator dns`](#auto-discovery) below.
@@ -222,6 +231,12 @@ If tailscaled is running, kcompass looks up `kcompass.<tailnet-magic-dns-suffix>
 kcompass.your-tailnet.ts.net. 300 IN TXT "v=kc1; backend=git@github.com:company/clusters"
 ```
 
+If your tailnet advertises additional DNS search paths via the admin console
+(e.g. `your-org.com`), kcompass queries `tailscale dns status --json` to
+attribute those paths to Tailscale — so `kcompass operator dns --verify`
+reports them under the Tailscale row rather than duplicating them under
+Corporate DNS.
+
 ### 3. Netbird
 
 If the Netbird WireGuard interface (`wt0`) is present, kcompass looks up `kcompass.<management-server-domain>` as a TXT record:
@@ -254,12 +269,14 @@ discovery:
 | `kcompass list` | List all clusters across configured backends |
 | `kcompass list --json` | JSON output for scripting |
 | `kcompass list --backend <name>` | Restrict to a specific backend |
-| `kcompass connect <name>` | Resolve credentials and set current context |
+| `kcompass connect <name>` | Resolve credentials and set current context. Idempotent — rerunning against the same cluster is a no-op and prints `already up to date` |
 | `kcompass connect <name> --no-switch` | Merge credentials without switching context |
-| `kcompass init <url-or-path>` | Register a backend (git or local, inferred from URL) |
+| `kcompass init <url-or-path-or-zone>` | Register a backend. URL schemes (`https://`, `git@`, `ssh://`, …) map to the git backend; DNS zones (e.g. `example.com`) resolve the TXT record at `kcompass.<zone>`; everything else is a local file path |
+| `kcompass init --skip-verify <target>` | Register without verifying the backend is reachable (for pre-staging a machine) |
 | `kcompass backends` | List configured backends and their status |
 | `kcompass operator dns <url>` | Print DNS TXT records for auto-discovery |
-| `kcompass operator dns <url> --verify` | Verify TXT records are published correctly |
+| `kcompass operator dns <url> --verify` | Verify the expected TXT records are published on the currently detected networks |
+| `kcompass operator dns <url> --verify --hostname <fqdn>` | Verify a specific FQDN instead of the auto-detected set (repeatable, useful from a machine whose resolver isn't configured for the zone) |
 | `kcompass operator add` | Scaffold a cluster entry into an inventory file (interactive or flag-driven) |
 | `--verbose` / `-v` | Global flag: emit per-probe discovery diagnostics on stderr |
 
@@ -300,6 +317,29 @@ opening a browser) work normally.
 
 Inventory is validated at parse time, so a malformed record fails loudly during
 `kcompass list` rather than silently waiting for someone to try `connect`.
+
+---
+
+## Terraform helpers
+
+Optional modules live in [`terraform/modules/`](terraform/) for operators
+who manage cluster inventory and auto-discovery with infrastructure-as-code:
+
+- [`kcompass_inventory`](terraform/modules/kcompass_inventory) — writes a
+  `ClusterRecord` YAML file into an existing GitHub repo via the
+  `integrations/github` provider. Takes the full `KubeconfigSpec`
+  (inline or command).
+- [`kcompass_txt`](terraform/modules/kcompass_txt) — pure value formatter
+  for the discovery TXT record. Returns `v=kc1; backend=<url>` and the
+  conventional label (`kcompass`). Provider-agnostic — feed the outputs
+  into `cloudflare_record`, `aws_route53_record`, `google_dns_record_set`,
+  or any other DNS resource.
+
+See [`terraform/README.md`](terraform/README.md) for usage examples and
+an end-to-end [`examples/basic`](terraform/examples/basic) configuration.
+
+kcompass itself has no dependency on these modules; they're sugar for
+operators already living in Terraform.
 
 ---
 
