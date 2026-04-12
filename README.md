@@ -49,8 +49,13 @@ make              # lint + test + build (default target)
 make test         # go test -race ./...
 make lint         # golangci-lint
 make cover        # test with coverage report
-make check        # fmt + vet + lint + test
+make check        # fmt + vet + lint + test + tf-check
 make clean        # remove build artifacts
+
+# Terraform modules (requires tofu or terraform)
+make tf-fmt       # format terraform/ in place
+make tf-validate  # init + validate the example (transitively validates modules)
+make tf-check     # tf-validate + fmt check (no writes)
 ```
 
 ---
