@@ -41,21 +41,52 @@ Setting up kubeconfig for cluster1... Done.
 Context is set to cluster1.
 ```
 
+Connect is **idempotent**: rerunning against the same cluster is a no-op and prints
+`already up to date` instead of `Done.`. Cluster/user/context entries are merged by
+content — matching slots are reused rather than rewritten — and the context's namespace
+is preserved across re-merges, so `kubectl config set-context --current --namespace=foo`
+survives a subsequent `kcompass connect`.
+
 Flags:
 - `--no-switch` — merge credentials but do not change the current context
 
-### `kcompass init <url-or-path>`
+### `kcompass init <url-or-path-or-zone>`
 
-Explicitly registers a backend by URL or local path. Writes to `~/.kcompass/config.yaml`.
-The backend type is inferred from the URL: `https://`, `http://`, `git@`, `git://`, and
-`ssh://` produce a git backend; anything else is treated as a local file path.
+Explicitly registers a backend and writes to `~/.kcompass/config.yaml`. The argument
+is interpreted in this order:
+
+1. **URL** — `https://`, `http://`, `git@`, `git://`, `ssh://` → git backend.
+2. **DNS zone** — anything that looks like a bare DNS name (contains a dot, no path
+   separators, no leading `.` or `~`) triggers a TXT lookup at `kcompass.<zone>`. If
+   a valid `v=kc1; backend=<url>` record is found, the resolved URL is registered
+   instead. This is the same record format the auto-discovery probes consume, but
+   triggered explicitly — useful when the local resolver isn't yet configured for
+   the zone, or when bootstrapping against an organization you don't yet share a
+   network with.
+3. **Local path** — everything else (including zone-shaped arguments that don't
+   resolve) is treated as a path to a local YAML inventory file.
+
+Before writing the config, init **verifies** the backend is actually reachable by
+calling `backend.List(ctx)` once. Common failures are caught at registration time:
+missing local files, private repositories the caller can't authenticate to, typos
+in URLs. On an access-denied error the CLI prints `You don't have access to this
+cluster inventory.` and the config is left unchanged.
 
 ```
 $ kcompass init git@github.com:company/clusters
 Backend registered: git@github.com:company/clusters
 
 To advertise via DNS auto-discovery: kcompass operator dns git@github.com:company/clusters
+
+$ kcompass init example.com
+Resolved kcompass.example.com → git@github.com:example/clusters
+Backend registered: git@github.com:example/clusters
+(via kcompass.example.com TXT record)
 ```
+
+Flags:
+- `--skip-verify` — register without the reachability check. Intended for
+  pre-staging a machine before it has network access to the backend.
 
 ### `kcompass backends`
 
@@ -76,13 +107,24 @@ hostnames depending on the network (corporate DNS search domain, Tailscale
 MagicDNS suffix, Netbird management domain). When run on a machine that is already
 attached to those networks, real detected hostnames are shown instead of placeholders.
 
+When a DNS search path is also advertised by Tailscale (queried via
+`tailscale dns status --json`), it is attributed to the Tailscale row rather
+than duplicated under Corporate DNS, so the output stays unambiguous when the
+tailnet pushes extra search paths via the admin console.
+
 ```
 $ kcompass operator dns git@github.com:company/clusters
 $ kcompass operator dns git@github.com:company/clusters --verify
+$ kcompass operator dns git@github.com:company/clusters --hostname kcompass.company.com
 ```
 
-The `--verify` flag performs live TXT lookups against each detected domain and
-reports `OK`, `mismatch`, or `not found` per hostname.
+Flags:
+- `--verify` — perform live TXT lookups against each detected domain and
+  report `OK`, `mismatch`, or `not found` per hostname.
+- `--hostname <fqdn>` — override the auto-detected set and verify a specific
+  FQDN instead. Repeatable. Implies `--verify`. Useful when verifying a
+  published record from a machine whose resolver isn't yet configured for
+  the zone (e.g. before rolling out DNS search-path changes).
 
 ### `kcompass operator add`
 
