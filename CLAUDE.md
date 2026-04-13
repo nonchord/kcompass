@@ -13,7 +13,7 @@ Read `SPEC.md` for the full specification. This file contains working instructio
 - **Module path:** `github.com/nonchord/kcompass`
 - **CLI framework:** `cobra`
 - **YAML:** `gopkg.in/yaml.v3`
-- **Git backend:** `go-git/go-git`
+- **Git backend:** system `git` binary (via `os/exec`)
 - **DNS / TXT lookups:** standard library `net` package only
 - **Kubeconfig merge:** `k8s.io/client-go/tools/clientcmd`
 - **Terminal detection:** `golang.org/x/term`

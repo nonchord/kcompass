@@ -129,7 +129,7 @@ func (accessDeniedBackend) Get(ctx context.Context, _ string) (*backend.ClusterR
 }
 
 func TestListSurfacesAccessDenied(t *testing.T) {
-	reg := backend.NewRegistry([]backend.Backend{accessDeniedBackend{}}, 0)
+	reg := backend.NewRegistry([]backend.Backend{accessDeniedBackend{}}, 0, nil)
 
 	root := NewRootCommand()
 	stdout := &bytes.Buffer{}
@@ -150,7 +150,7 @@ func TestListSurfacesAccessDenied(t *testing.T) {
 }
 
 func TestConnectSurfacesAccessDenied(t *testing.T) {
-	reg := backend.NewRegistry([]backend.Backend{accessDeniedBackend{}}, 0)
+	reg := backend.NewRegistry([]backend.Backend{accessDeniedBackend{}}, 0, nil)
 
 	root := NewRootCommand()
 	stdout := &bytes.Buffer{}

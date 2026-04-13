@@ -4,53 +4,55 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
-	gogit "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/nonchord/kcompass/internal/backend"
 )
 
+// gitCmd runs a git command in the given directory. If dir is empty, the
+// command runs in the process's working directory.
+func gitCmd(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "git %s failed: %s", strings.Join(args, " "), string(out))
+}
+
 // setupBareRepo creates a bare git repository in a temp directory, commits the
 // given files into it, and returns the repo URL and a fresh cache directory.
 func setupBareRepo(t *testing.T, files map[string]string) (repoURL string, cacheDir string) {
 	t.Helper()
 
+	workDir := t.TempDir()
 	bareDir := filepath.Join(t.TempDir(), "remote.git")
-	workDir := filepath.Join(t.TempDir(), "work")
 
-	// Init non-bare work repo and make an initial commit.
-	work, err := gogit.PlainInit(workDir, false)
-	require.NoError(t, err)
-
-	wt, err := work.Worktree()
-	require.NoError(t, err)
+	gitCmd(t, workDir, "init")
+	gitCmd(t, workDir, "config", "user.email", "test@test.com")
+	gitCmd(t, workDir, "config", "user.name", "test")
 
 	for name, content := range files {
 		full := filepath.Join(workDir, name)
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
 		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
-		_, err = wt.Add(name)
-		require.NoError(t, err)
 	}
-	_, err = wt.Commit("initial", &gogit.CommitOptions{
-		Author:            &object.Signature{Name: "test", Email: "test@test.com"},
-		AllowEmptyCommits: len(files) == 0,
-	})
-	require.NoError(t, err)
 
-	// Mirror into a bare repo so the backend can clone from a URL.
-	_, err = gogit.PlainClone(bareDir, true, &gogit.CloneOptions{
-		URL: workDir,
-	})
-	require.NoError(t, err)
+	gitCmd(t, workDir, "add", "-A")
+	if len(files) == 0 {
+		gitCmd(t, workDir, "commit", "--allow-empty", "-m", "initial")
+	} else {
+		gitCmd(t, workDir, "commit", "-m", "initial")
+	}
+	gitCmd(t, workDir, "clone", "--bare", workDir, bareDir)
 
 	return "file://" + bareDir, t.TempDir()
 }
@@ -60,22 +62,18 @@ func setupBareRepo(t *testing.T, files map[string]string) (repoURL string, cache
 func pushCommitToBare(t *testing.T, bareURL string, files map[string]string) {
 	t.Helper()
 	workDir := t.TempDir()
-	work, err := gogit.PlainClone(workDir, false, &gogit.CloneOptions{URL: bareURL})
-	require.NoError(t, err)
-	wt, err := work.Worktree()
-	require.NoError(t, err)
+	gitCmd(t, workDir, "clone", bareURL, workDir+"/work")
+	work := workDir + "/work"
+	gitCmd(t, work, "config", "user.email", "test@test.com")
+	gitCmd(t, work, "config", "user.name", "test")
 	for name, content := range files {
-		full := filepath.Join(workDir, name)
+		full := filepath.Join(work, name)
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
 		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
-		_, err = wt.Add(name)
-		require.NoError(t, err)
 	}
-	_, err = wt.Commit("update", &gogit.CommitOptions{
-		Author: &object.Signature{Name: "test", Email: "test@test.com"},
-	})
-	require.NoError(t, err)
-	require.NoError(t, work.Push(&gogit.PushOptions{}))
+	gitCmd(t, work, "add", "-A")
+	gitCmd(t, work, "commit", "-m", "update")
+	gitCmd(t, work, "push")
 }
 
 // setupBareRepoWithBranch creates a bare repo with a default branch and an
@@ -83,57 +81,36 @@ func pushCommitToBare(t *testing.T, bareURL string, files map[string]string) {
 func setupBareRepoWithBranch(t *testing.T, defaultFiles map[string]string, branchName string, branchFiles map[string]string) (repoURL string, cacheDir string) {
 	t.Helper()
 
+	workDir := t.TempDir()
 	bareDir := filepath.Join(t.TempDir(), "remote.git")
-	workDir := filepath.Join(t.TempDir(), "work")
 
-	work, err := gogit.PlainInit(workDir, false)
-	require.NoError(t, err)
-	wt, err := work.Worktree()
-	require.NoError(t, err)
-
-	writeAndStage := func(files map[string]string) {
-		for name, content := range files {
-			full := filepath.Join(workDir, name)
-			require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
-			require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
-			_, err = wt.Add(name)
-			require.NoError(t, err)
-		}
-	}
-	sig := &object.Signature{Name: "test", Email: "test@test.com"}
+	gitCmd(t, workDir, "init")
+	gitCmd(t, workDir, "config", "user.email", "test@test.com")
+	gitCmd(t, workDir, "config", "user.name", "test")
 
 	// Initial commit on default branch.
-	writeAndStage(defaultFiles)
-	_, err = wt.Commit("default branch commit", &gogit.CommitOptions{Author: sig, AllowEmptyCommits: true})
-	require.NoError(t, err)
+	for name, content := range defaultFiles {
+		full := filepath.Join(workDir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+	}
+	gitCmd(t, workDir, "add", "-A")
+	gitCmd(t, workDir, "commit", "--allow-empty", "-m", "default branch commit")
 
 	// Create and switch to the extra branch.
-	require.NoError(t, wt.Checkout(&gogit.CheckoutOptions{
-		Branch: plumbing.NewBranchReferenceName(branchName),
-		Create: true,
-	}))
-	writeAndStage(branchFiles)
-	_, err = wt.Commit("branch commit", &gogit.CommitOptions{Author: sig})
-	require.NoError(t, err)
+	gitCmd(t, workDir, "checkout", "-b", branchName)
+	for name, content := range branchFiles {
+		full := filepath.Join(workDir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+	}
+	gitCmd(t, workDir, "add", "-A")
+	gitCmd(t, workDir, "commit", "-m", "branch commit")
 
-	// Mirror to bare repo, pushing all branches.
-	_, err = gogit.PlainClone(bareDir, true, &gogit.CloneOptions{URL: workDir})
-	require.NoError(t, err)
-	// PlainClone only copies HEAD; push all refs explicitly.
-	bare, err := gogit.PlainOpen(bareDir)
-	require.NoError(t, err)
-	_ = bare
-	workRepo, err := gogit.PlainOpen(workDir)
-	require.NoError(t, err)
-	_, err = workRepo.CreateRemote(&config.RemoteConfig{
-		Name: "bare",
-		URLs: []string{bareDir},
-	})
-	require.NoError(t, err)
-	require.NoError(t, workRepo.Push(&gogit.PushOptions{
-		RemoteName: "bare",
-		RefSpecs:   []config.RefSpec{"refs/heads/*:refs/heads/*"},
-	}))
+	// Create bare clone (gets HEAD branch only), then push all branches.
+	gitCmd(t, workDir, "clone", "--bare", workDir, bareDir)
+	gitCmd(t, workDir, "remote", "add", "bare", bareDir)
+	gitCmd(t, workDir, "push", "bare", "--all")
 
 	return "file://" + bareDir, t.TempDir()
 }
@@ -236,15 +213,6 @@ func TestGitBackendCacheHit(t *testing.T) {
 	_, err := b.List(context.Background())
 	require.NoError(t, err)
 
-	// Point the backend at an unreachable URL — if it tries to fetch it will fail.
-	bUnreachable, err := backend.NewGitBackend(backend.GitBackendConfig{
-		Name:     "test-git",
-		URL:      "file:///nonexistent-repo-path",
-		CacheDir: cacheDir,
-		FetchTTL: time.Hour, // TTL not expired, so no fetch attempt
-	})
-	require.NoError(t, err)
-
 	// Reuse the same cache dir with the original URL to verify cache is hit.
 	b2, err := backend.NewGitBackend(backend.GitBackendConfig{
 		Name:     "test-git",
@@ -253,7 +221,6 @@ func TestGitBackendCacheHit(t *testing.T) {
 		FetchTTL: time.Hour,
 	})
 	require.NoError(t, err)
-	_ = bUnreachable
 
 	records, err := b2.List(context.Background())
 	require.NoError(t, err)
@@ -303,9 +270,7 @@ func TestGitBackendRepoPathSubdir(t *testing.T) {
 // TestGitBackendFetchFailuresAreNonFatal covers the partial-clone recovery
 // path in fetchRepo: if an established clone exists but the remote becomes
 // unreachable, List must still succeed with the cached copy rather than
-// propagating the fetch error. ensureRepo explicitly swallows fetch errors
-// for this exact reason, and this test pins that behavior so it can't
-// silently regress into "network blip breaks kcompass list".
+// propagating the fetch error.
 func TestGitBackendFetchFailuresAreNonFatal(t *testing.T) {
 	repoURL, cacheDir := setupBareRepo(t, map[string]string{
 		"clusters.yaml": singleClusterYAML,
@@ -335,8 +300,7 @@ func TestGitBackendFetchFailuresAreNonFatal(t *testing.T) {
 
 // TestGitBackendFetchFailureLogsWhenVerbose verifies that when a Log callback
 // is set (wired to --verbose in production), the swallowed fetch error is
-// emitted as a diagnostic rather than silently discarded. Without this,
-// operators debugging stale-cache issues had no signal.
+// emitted as a diagnostic rather than silently discarded.
 func TestGitBackendFetchFailureLogsWhenVerbose(t *testing.T) {
 	repoURL, cacheDir := setupBareRepo(t, map[string]string{
 		"clusters.yaml": singleClusterYAML,
@@ -408,9 +372,6 @@ func TestGitBackendCacheHitNoFetch(t *testing.T) {
 	_, err := b.List(context.Background())
 	require.NoError(t, err)
 
-	// The backend creates exactly one subdirectory under cacheDir (a
-	// hash of the repo URL); find it by scanning rather than relying on
-	// the unexported naming scheme.
 	tsPath := filepath.Join(singleCloneDir(t, cacheDir), ".kcompass-last-fetch")
 	info1, err := os.Stat(tsPath)
 	require.NoError(t, err)
@@ -427,9 +388,7 @@ func TestGitBackendCacheHitNoFetch(t *testing.T) {
 }
 
 // singleCloneDir finds the single hash-named subdirectory the git backend
-// creates under cacheDir. Used by tests that need to peek at clone-local
-// files (e.g. the fetch timestamp) without reaching into the backend's
-// unexported cloneDir() method.
+// creates under cacheDir.
 func singleCloneDir(t *testing.T, cacheDir string) string {
 	t.Helper()
 	entries, err := os.ReadDir(cacheDir)
@@ -486,8 +445,8 @@ func TestGitBackendMissingRepoPath(t *testing.T) {
 }
 
 // TestGitBackendGitTokenEnvVar verifies that setting GIT_TOKEN does not break
-// cloning from a file:// URL (token is read from env but unused for local
-// transport). This guards against regressions in the auth-selection path.
+// cloning from a file:// URL. For file:// URLs, the token is not embedded
+// since there's no host to authenticate to.
 func TestGitBackendGitTokenEnvVar(t *testing.T) {
 	repoURL, cacheDir := setupBareRepo(t, map[string]string{
 		"clusters.yaml": singleClusterYAML,

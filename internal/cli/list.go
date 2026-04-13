@@ -75,7 +75,9 @@ func printAccessDenied(cmd *cobra.Command) {
 	_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
 		"You don't have access to this cluster inventory.")
 	_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
-		"Check that your SSH key or git token is configured for the backend,")
+		"Verify your credentials by running: git clone <backend-url>")
 	_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
-		"and that you've been granted access to the repository.")
+		"For SSH repos, check your SSH key and ~/.ssh/config.")
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
+		"For HTTPS repos, set GIT_TOKEN or configure a git credential helper.")
 }

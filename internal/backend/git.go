@@ -1,27 +1,24 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/transport"
-	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
-	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 )
 
 const lastFetchFile = ".kcompass-last-fetch"
 
 // GitBackend clones or fetches a Git repository and reads cluster YAML files
-// from a configurable path within it.
+// from a configurable path within it. It shells out to the system git binary,
+// inheriting the user's SSH config, credential helpers, and other git
+// configuration.
 type GitBackend struct {
 	name     string
 	url      string
@@ -161,34 +158,40 @@ func (b *GitBackend) writeFetchTimestamp(cloneDir string) {
 	}
 }
 
+// effectiveURL returns the clone URL, embedding GIT_TOKEN credentials for
+// HTTPS URLs. The token is stored in the clone's remote config, which is
+// acceptable because the clone lives in kcompass's private cache directory.
+func (b *GitBackend) effectiveURL() string {
+	if token := os.Getenv("GIT_TOKEN"); token != "" {
+		if after, ok := strings.CutPrefix(b.url, "https://"); ok {
+			return "https://git:" + token + "@" + after
+		}
+		if after, ok := strings.CutPrefix(b.url, "http://"); ok {
+			return "http://git:" + token + "@" + after
+		}
+	}
+	return b.url
+}
+
 // cloneRepo performs an initial clone into cloneDir.
 func (b *GitBackend) cloneRepo(ctx context.Context, cloneDir string) error {
-	if err := os.MkdirAll(cloneDir, 0o700); err != nil {
-		return fmt.Errorf("create clone dir: %w", err)
+	if err := os.MkdirAll(filepath.Dir(cloneDir), 0o700); err != nil {
+		return fmt.Errorf("create cache dir: %w", err)
 	}
-	auth, err := b.authMethod()
-	if err != nil {
-		return fmt.Errorf("build auth: %w", err)
-	}
-	opts := &git.CloneOptions{
-		URL:  b.url,
-		Auth: auth,
-	}
+
+	args := []string{"clone", "--single-branch"}
 	if b.ref != "" {
-		opts.ReferenceName = plumbing.NewBranchReferenceName(b.ref)
+		args = append(args, "--branch", b.ref)
 	}
-	if _, cloneErr := git.PlainCloneContext(ctx, cloneDir, false, opts); cloneErr != nil {
+	args = append(args, b.effectiveURL(), cloneDir)
+
+	stderr, err := b.runGit(ctx, "", args...)
+	if err != nil {
 		_ = os.RemoveAll(cloneDir)
-		if isAuthError(cloneErr) {
-			// Single %w wrap on the sentinel + %v on the underlying error:
-			// errors.Is(err, ErrAccessDenied) still works (so list/connect
-			// can catch it and print the friendly message), and the raw
-			// form prints cleanly as
-			//   "clone <url>: access denied to cluster inventory (<raw>)"
-			// instead of the two-phrase colon-chain a double %w produces.
-			return fmt.Errorf("clone %s: %w (%v)", b.url, ErrAccessDenied, cloneErr)
+		if isGitAuthError(stderr) {
+			return fmt.Errorf("clone %s: %w (%s)", b.url, ErrAccessDenied, firstLine(stderr))
 		}
-		return fmt.Errorf("clone %s: %w", b.url, cloneErr)
+		return fmt.Errorf("clone %s: %s", b.url, firstLine(stderr))
 	}
 	b.writeFetchTimestamp(cloneDir)
 	return nil
@@ -196,77 +199,62 @@ func (b *GitBackend) cloneRepo(ctx context.Context, cloneDir string) error {
 
 // fetchRepo pulls the latest changes for an existing clone, advancing HEAD.
 func (b *GitBackend) fetchRepo(ctx context.Context, cloneDir string) error {
-	repo, err := git.PlainOpen(cloneDir)
+	// Update the remote URL so credential changes (GIT_TOKEN) take effect.
+	if _, err := b.runGit(ctx, cloneDir, "remote", "set-url", "origin", b.effectiveURL()); err != nil {
+		return fmt.Errorf("set remote url: %w", err)
+	}
+
+	stderr, err := b.runGit(ctx, cloneDir, "pull", "--ff-only")
 	if err != nil {
-		return fmt.Errorf("open repo: %w", err)
-	}
-	wt, err := repo.Worktree()
-	if err != nil {
-		return fmt.Errorf("get worktree: %w", err)
-	}
-	auth, err := b.authMethod()
-	if err != nil {
-		return fmt.Errorf("build auth: %w", err)
-	}
-	opts := &git.PullOptions{Auth: auth}
-	if b.ref != "" {
-		opts.ReferenceName = plumbing.NewBranchReferenceName(b.ref)
-	}
-	err = wt.PullContext(ctx, opts)
-	if err != nil && err != git.NoErrAlreadyUpToDate {
-		if isAuthError(err) {
-			return fmt.Errorf("pull %s: %w (%v)", b.url, ErrAccessDenied, err)
+		if isGitAuthError(stderr) {
+			return fmt.Errorf("pull %s: %w (%s)", b.url, ErrAccessDenied, firstLine(stderr))
 		}
-		return fmt.Errorf("pull %s: %w", b.url, err)
+		return fmt.Errorf("pull %s: %s", b.url, firstLine(stderr))
 	}
 	b.writeFetchTimestamp(cloneDir)
 	return nil
 }
 
-// isAuthError reports whether err indicates an authentication or authorization
-// failure that the user should be told about in friendly terms. It matches
-// go-git's transport sentinels and, as a fallback, substrings for ssh and
-// https auth failures that don't wrap those sentinels.
-func isAuthError(err error) bool {
-	if err == nil {
-		return false
+// runGit executes a git command and returns its stderr output.
+// GIT_TERMINAL_PROMPT=0 is set to prevent interactive credential prompts
+// that would hang the process.
+func (b *GitBackend) runGit(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // args are constructed internally, not from user input
+	if dir != "" {
+		cmd.Dir = dir
 	}
-	if errors.Is(err, transport.ErrAuthenticationRequired) ||
-		errors.Is(err, transport.ErrAuthorizationFailed) ||
-		errors.Is(err, transport.ErrRepositoryNotFound) {
-		return true
-	}
-	msg := err.Error()
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return strings.TrimSpace(stderr.String()), err
+}
+
+// isGitAuthError reports whether git's stderr output indicates an
+// authentication or authorization failure.
+func isGitAuthError(stderr string) bool {
+	lower := strings.ToLower(stderr)
 	switch {
-	case strings.Contains(msg, "authentication required"),
-		strings.Contains(msg, "authorization failed"),
-		strings.Contains(msg, "repository not found"),
-		strings.Contains(msg, "Repository not found"),
-		strings.Contains(msg, "unable to authenticate"),
-		strings.Contains(msg, "permission denied"),
-		strings.Contains(msg, "Permission denied"):
+	case strings.Contains(lower, "authentication required"),
+		strings.Contains(lower, "authorization failed"),
+		strings.Contains(lower, "repository not found"),
+		strings.Contains(lower, "unable to authenticate"),
+		strings.Contains(lower, "permission denied"),
+		strings.Contains(lower, "could not read from remote repository"),
+		strings.Contains(lower, "could not read username"),
+		strings.Contains(lower, "invalid credentials"),
+		strings.Contains(lower, "terminal prompts disabled"):
 		return true
 	}
 	return false
 }
 
-// authMethod selects the appropriate go-git auth from the URL and environment.
-func (b *GitBackend) authMethod() (transport.AuthMethod, error) {
-	switch {
-	case strings.HasPrefix(b.url, "https://") || strings.HasPrefix(b.url, "http://"):
-		if token := os.Getenv("GIT_TOKEN"); token != "" {
-			return &githttp.BasicAuth{Username: "git", Password: token}, nil
-		}
-		return nil, nil
-	case strings.HasPrefix(b.url, "git@") || strings.HasPrefix(b.url, "ssh://"):
-		auth, err := ssh.NewSSHAgentAuth("git")
-		if err != nil {
-			return ssh.DefaultAuthBuilder("git")
-		}
-		return auth, nil
-	default:
-		return nil, nil
+// firstLine returns the first non-empty line of s, or s itself if single-line.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
 	}
+	return s
 }
 
 // scanClusterFiles walks dir and parses every .yaml file that has a top-level

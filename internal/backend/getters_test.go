@@ -31,7 +31,7 @@ func TestBackendNames(t *testing.T) {
 	})
 
 	t.Run("Registry", func(t *testing.T) {
-		reg := backend.NewRegistry(nil, 0)
+		reg := backend.NewRegistry(nil, 0, nil)
 		assert.Equal(t, "registry", reg.Name())
 	})
 }
@@ -40,14 +40,14 @@ func TestBackendNames(t *testing.T) {
 // `list` command to detect an empty-registry state.
 func TestRegistryBackendsGetter(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
-		reg := backend.NewRegistry(nil, 0)
+		reg := backend.NewRegistry(nil, 0, nil)
 		assert.Empty(t, reg.Backends())
 	})
 
 	t.Run("populated", func(t *testing.T) {
 		lb, err := backend.NewLocalBackend("a", "/tmp/a.yaml")
 		require.NoError(t, err)
-		reg := backend.NewRegistry([]backend.Backend{lb}, 0)
+		reg := backend.NewRegistry([]backend.Backend{lb}, 0, nil)
 		got := reg.Backends()
 		require.Len(t, got, 1)
 		assert.Equal(t, "a", got[0].Name())
@@ -69,14 +69,15 @@ func (e *errBackend) Get(_ context.Context, _ string) (*backend.ClusterRecord, e
 var errListFailed = errors.New("list failed")
 
 // TestRegistryGetPropagatesListError exercises the branch of Registry.Get
-// where List returns an error. The existing TestRegistryGetNotFound covers
-// the "not found" path but not the "list failed" path.
+// where List returns an error. When all backends fail, Get must propagate
+// the combined error, not silently return ErrNotFound.
 func TestRegistryGetPropagatesListError(t *testing.T) {
-	reg := backend.NewRegistry([]backend.Backend{&errBackend{name: "broken"}}, 0)
+	reg := backend.NewRegistry([]backend.Backend{&errBackend{name: "broken"}}, 0, nil)
 	_, err := reg.Get(context.Background(), "anything")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, errListFailed,
+	assert.Contains(t, err.Error(), "all backends failed",
 		"Get must propagate the underlying List error, not swallow it")
+	assert.Contains(t, err.Error(), errListFailed.Error())
 }
 
 // TestLocalBackendGetMissingFile exercises LocalBackend.Get's error path

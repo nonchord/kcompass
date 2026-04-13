@@ -173,10 +173,14 @@ backends:
 
 **Authentication:**
 
+kcompass shells out to the system `git` binary for clone and fetch, so it
+inherits your existing git and SSH configuration — SSH agent, `~/.ssh/config`
+host aliases, credential helpers, and everything else git already knows about.
+
 | URL scheme | Auth method |
 |---|---|
-| `https://` | `GIT_TOKEN` env var (if set), otherwise unauthenticated |
-| `git@` / `ssh://` | SSH agent, then `~/.ssh/id_*` default keys |
+| `https://` | `GIT_TOKEN` env var, or your git credential helper |
+| `git@` / `ssh://` | Your SSH config (agent, key files, `~/.ssh/config`) |
 | `file://` | None required |
 
 ```sh
