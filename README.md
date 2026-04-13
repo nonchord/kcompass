@@ -20,13 +20,22 @@ Context is set to cluster1.
 
 ## Installation
 
-**Requires Go 1.26 or later.**
+**Quick install** (Linux/macOS):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nonchord/kcompass/main/install.sh | sh
+```
+
+Options: `--dir /usr/local/bin` to change the install path (default: `~/.local/bin`),
+`--version v0.2.0` to pin a version.
+
+**With Go** (requires Go 1.26+):
 
 ```sh
 go install github.com/nonchord/kcompass@latest
 ```
 
-Or build from source:
+**From source:**
 
 ```sh
 git clone https://github.com/nonchord/kcompass.git
