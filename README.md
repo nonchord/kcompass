@@ -26,8 +26,15 @@ Context is set to cluster1.
 curl -fsSL https://raw.githubusercontent.com/nonchord/kcompass/main/install.sh | sh
 ```
 
-Options: `--dir /usr/local/bin` to change the install path (default: `~/.local/bin`),
-`--version v0.2.0` to pin a version.
+Pass options with `sh -s --`:
+
+```sh
+# Install to a specific directory
+curl -fsSL https://raw.githubusercontent.com/nonchord/kcompass/main/install.sh | sh -s -- --dir /usr/local/bin
+
+# Pin a specific version
+curl -fsSL https://raw.githubusercontent.com/nonchord/kcompass/main/install.sh | sh -s -- --version v0.2.0
+```
 
 **With Go** (requires Go 1.26+):
 
