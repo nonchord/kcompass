@@ -87,6 +87,15 @@ jobs:
           version: "~> v2"
           args: build --snapshot --clean
 
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        run: shellcheck *.sh
+
   terraform:
     name: Terraform
     runs-on: ubuntu-latest
