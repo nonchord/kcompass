@@ -254,9 +254,9 @@ Each `.yaml` file with a top-level `clusters:` key is parsed into `[]ClusterReco
 files without that key are silently skipped, so a repo can mix cluster inventory with
 other YAML.
 
-Supports:
-- HTTPS with token auth (`GIT_TOKEN` env var)
-- SSH with default key (via SSH agent, then `~/.ssh/id_*`)
+Supports (via system `git` binary — inherits full git/SSH configuration):
+- HTTPS with token auth (`GIT_TOKEN` env var or git credential helper)
+- SSH (agent, key files, `~/.ssh/config` host aliases)
 - Public repos (no auth)
 
 The local clone is cached at `~/.kcompass/cache/git/<hash-of-url>/` and refreshed

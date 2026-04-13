@@ -114,7 +114,7 @@ func buildRegistry(ctx context.Context, cfgPath string, log func(string)) (*back
 		}
 	}
 
-	return backend.NewRegistry(backends, ttl), nil
+	return backend.NewRegistry(backends, ttl, log), nil
 }
 
 // discoveryEnabled reports whether auto-discovery should run.

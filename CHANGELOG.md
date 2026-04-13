@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-13
+
+### Changed
+
+- **Git backend uses system `git` instead of go-git.** Clone and fetch now shell
+  out to the `git` binary, inheriting the user's full SSH config (`~/.ssh/config`
+  host aliases, agent forwarding, `IdentityFile` directives), credential helpers,
+  and all other git configuration. This fixes silent failures on machines without
+  `ssh-agent` running and resolves compatibility issues with newer SSH key formats
+  (see [go-git/go-git#1673](https://github.com/go-git/go-git/issues/1673)).
+- `GIT_TOKEN` for HTTPS backends still works; it is now embedded in the clone URL
+  (stored only in kcompass's private cache directory).
+- `GIT_TERMINAL_PROMPT=0` is set on all git operations to prevent interactive
+  credential prompts from hanging the process.
+
+### Improved
+
+- **Registry tolerates partial backend failures.** If one backend is unreachable
+  (e.g. a git repo you can't clone), kcompass now logs a warning and continues
+  with the remaining backends instead of failing the entire `kcompass list`.
+  The error is surfaced with `--verbose`. If all backends fail, the combined
+  errors are returned.
+- **Better auth error messages.** The "access denied" message now suggests
+  running `git clone <url>` to verify credentials directly, and mentions
+  `~/.ssh/config` and credential helpers instead of only SSH keys.
+
+### Removed
+
+- `go-git/go-git` dependency and its ~15 transitive dependencies. The `git`
+  binary is now required at runtime.
+
 ## [0.1.0] - 2026-04-12
 
 Initial public release.
@@ -24,5 +55,6 @@ Initial public release.
 - Local YAML backend — read cluster records from a single file on disk.
 - Terraform helper modules (`terraform/modules/`): `kcompass_inventory` (render inventory YAML) and `kcompass_txt` (render TXT record value). Both are pure value transforms with no provider dependency.
 
-[Unreleased]: https://github.com/nonchord/kcompass/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/nonchord/kcompass/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/nonchord/kcompass/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/nonchord/kcompass/releases/tag/v0.1.0

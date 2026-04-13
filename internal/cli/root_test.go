@@ -52,7 +52,7 @@ func makeLocalRegistry(t *testing.T, fixture string) *backend.Registry {
 	t.Helper()
 	b, err := backend.NewLocalBackend("local", filepath.Join(testdataDir, fixture))
 	require.NoError(t, err)
-	return backend.NewRegistry([]backend.Backend{b}, 0)
+	return backend.NewRegistry([]backend.Backend{b}, 0, nil)
 }
 
 func TestListCommand(t *testing.T) {
@@ -175,7 +175,7 @@ users:
 
 	b, err := backend.NewLocalBackend("local", inventoryPath)
 	require.NoError(t, err)
-	reg := backend.NewRegistry([]backend.Backend{b}, 0)
+	reg := backend.NewRegistry([]backend.Backend{b}, 0, nil)
 
 	kubeconfigPath := filepath.Join(dir, "kubeconfig")
 	t.Setenv("KUBECONFIG", kubeconfigPath)
@@ -213,7 +213,7 @@ func TestConnectCommandProducesInvalidKubeconfig(t *testing.T) {
 
 	b, err := backend.NewLocalBackend("local", inventoryPath)
 	require.NoError(t, err)
-	reg := backend.NewRegistry([]backend.Backend{b}, 0)
+	reg := backend.NewRegistry([]backend.Backend{b}, 0, nil)
 
 	kubeconfigPath := filepath.Join(dir, "kubeconfig")
 	t.Setenv("KUBECONFIG", kubeconfigPath)
