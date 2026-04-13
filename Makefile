@@ -2,7 +2,7 @@ ROOT    := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 BINARY  := kcompass
 GOFLAGS ?=
 
-.PHONY: all build test lint vet fmt cover clean install check tf-fmt tf-validate tf-check
+.PHONY: all build test lint vet fmt cover clean install check shellcheck tf-fmt tf-validate tf-check
 
 all: lint test build
 
@@ -29,7 +29,10 @@ vet:
 fmt:
 	cd $(ROOT) && gofmt -w .
 
-check: fmt vet lint test tf-check
+shellcheck:
+	cd $(ROOT) && shellcheck *.sh
+
+check: fmt vet lint test shellcheck tf-check
 	@echo "All checks passed."
 
 tf-fmt:
